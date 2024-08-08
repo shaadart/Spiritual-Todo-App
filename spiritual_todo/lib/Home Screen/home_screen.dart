@@ -16,6 +16,7 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  int _selectedIndex = 0;
   final Coordinates coordinates =
       Coordinates(21.2588, 81.6290); // Replace with your coordinates
   final params = CalculationMethod.karachi.getParameters();
@@ -23,7 +24,6 @@ class _HomeScreenState extends State<HomeScreen> {
   late final sunnahTimes = SunnahTimes(prayerTimes);
 
   late DateTime currentTime;
-
   final DatabaseHelper dbHelper = DatabaseHelper(
     dbName: "userDatabase.db",
     dbVersion: 3,
@@ -59,27 +59,27 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _showAddTaskSheet() {
-    showModalBottomSheet(
-      context: context,
-      builder: (context) {
-        return AddTaskSheet(
-          onAddTask: (title, time) {
-            setState(() {
-              // Update tasks list or state
-            });
-          },
-          prayerTimes: prayerTimes,
-        );
-      },
-    );
-  }
+  // void _showAddTaskSheet() {
+  //   showModalBottomSheet(
+  //     context: context,
+  //     builder: (context) {
+  //       return AddTaskSheet(
+  //         onAddTask: (title, time) {
+  //           setState(() {
+  //             // Update tasks list or state
+  //           });
+  //         },
+  //         prayerTimes: prayerTimes,
+  //       );
+  //     },
+  //   );
+  // }
 
   @override
   void initState() {
     super.initState();
     _updatePrayerTimes();
-    print('Midnight Time: ${sunnahTimes.lastThirdOfTheNight}');
+    // print('Midnight Time: ${sunnahTimes.lastThirdOfTheNight}');
   }
 
   void _updatePrayerTimes() {
@@ -269,13 +269,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
       ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
-      floatingActionButton: FloatingActionButton.large(
-        shape: CircleBorder(),
-        elevation: 0.3,
-        onPressed: _showAddTaskSheet,
-        child: Icon(Icons.add),
-      ),
+
     );
   }
 }

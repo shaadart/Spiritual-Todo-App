@@ -26,6 +26,16 @@ class _PrayerDetailsScreenState extends State<PrayerDetailsScreen> {
   late final SunnahTimes sunnahTimes;
   late DateTime currentTime;
   List<TaskHelper> _tasks = []; // Local list to manage tasks
+  Set<int> _expandedTasks = {}; // Track expanded task IDs
+  void _toggleExpansion(int taskId) {
+    setState(() {
+      if (_expandedTasks.contains(taskId)) {
+        _expandedTasks.remove(taskId);
+      } else {
+        _expandedTasks.add(taskId);
+      }
+    });
+  }
 
   @override
   void initState() {
@@ -98,14 +108,6 @@ class _PrayerDetailsScreenState extends State<PrayerDetailsScreen> {
 
 //   return "";
 // }
-  Widget taskItem(String title, String associatedPrayer, DateTime time,
-      List<String> daysOfWeek) {
-    return ListTile(
-      title: Text(title),
-      subtitle: Text('$associatedPrayer - ${DateFormat('HH:mm').format(time)}'),
-      trailing: Text(daysOfWeek.join(', ')),
-    );
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -157,10 +159,40 @@ class _PrayerDetailsScreenState extends State<PrayerDetailsScreen> {
                 else
                   ..._tasks
                       .map(
-                        (task) => taskItem(task.title, task.associatedPrayer,
-                            task.time, task.daysOfWeek),
+                        (task) => TaskItem(
+                          key: ValueKey(task.id),
+                          onCollapse: () => _toggleExpansion(task.id),
+                          task: task,
+                          onUpdate: (updatedTask) {
+                            setState(() {
+                              // Update the task in the list
+                              final index = _tasks
+                                  .indexWhere((t) => t.id == updatedTask.id);
+                              if (index != -1) {
+                                _tasks[index] = updatedTask;
+                              }
+                            });
+                          },
+                          onDelete: () {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text('${task.title} is deleted'),
+                                action: SnackBarAction(
+                                  label: 'Undo',
+                                  onPressed: () {
+                                    // Implement undo logic here
+                                  },
+                                ),
+                              ),
+                            );
+                            setState(() {
+                              // Remove the task from the list
+                              _tasks.removeWhere((t) => t.id == task.id);
+                            });
+                          },
+                        ),
                       )
-                      .toList(),
+                      .toList()
               ],
             ),
           ),

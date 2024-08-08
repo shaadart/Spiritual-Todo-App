@@ -1,17 +1,9 @@
-import 'dart:async'; // Import StreamController
+import 'dart:async';
 import 'package:adhan/adhan.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 import 'package:spiritual_todo/Service/db_helper.dart'; // Import your DB helper
-
-import '../Models/prayer_model.dart'; // Import your TaskHelper model
-
-import 'dart:async';
-import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
-import 'package:intl/intl.dart';
-import 'package:spiritual_todo/Service/db_helper.dart';
 import '../Models/prayer_model.dart'; // Import your TaskHelper model
 
 class TodoScreen extends StatefulWidget {
@@ -33,6 +25,9 @@ class _TodoScreenState extends State<TodoScreen> {
     columnDaysOfWeek: 'daysOfWeek',
   );
 
+  Set<int> _expandedTasks = {}; // Track expanded task IDs
+  List<TaskHelper> _deletedTasks = []; // Track deleted tasks
+
   @override
   void initState() {
     super.initState();
@@ -47,26 +42,70 @@ class _TodoScreenState extends State<TodoScreen> {
   }
 
   void _startPolling() {
-    _loadTasks(); // Initial load
-    Timer.periodic(Duration(seconds: 3), (timer) async {
-      _loadTasks(); // Poll the database every 3 seconds
+    _dbHelper.stream.listen((records) {
+      final tasks = records.map((map) => TaskHelper.fromMap(map)).toList();
+
+      // Sort tasks by their upcoming date and time
+      tasks.sort((a, b) {
+        DateTime now = DateTime.now();
+        DateTime aUpcoming = a.getUpcomingDateTime(now);
+        DateTime bUpcoming = b.getUpcomingDateTime(now);
+        return aUpcoming.compareTo(bUpcoming);
+      });
+
+      _tasksController.add(tasks);
     });
   }
 
   Future<void> _loadTasks() async {
-    final records = await _dbHelper.queryDatabase();
+    final records = await _dbHelper.queryDatabase(); // Fetch all records
     final tasks = records.map((map) => TaskHelper.fromMap(map)).toList();
+
+    // Sort tasks by their upcoming date and time
+    tasks.sort((a, b) {
+      DateTime now = DateTime.now();
+      DateTime aUpcoming = a.getUpcomingDateTime(now);
+      DateTime bUpcoming = b.getUpcomingDateTime(now);
+      return aUpcoming.compareTo(bUpcoming);
+    });
+
     _tasksController.add(tasks);
   }
 
   Future<void> _updateTask(TaskHelper task) async {
     await _dbHelper.updateRecord(task.toMap());
-    _loadTasks(); // Reload tasks after update
   }
 
   Future<void> _deleteTask(int id) async {
-    await _dbHelper.deleteRecord(id); // Use the task ID for deletion
-    _loadTasks(); // Reload tasks after deletion
+    final deletedTaskMap =
+        await _dbHelper.getTask(id); // Get the task to delete
+    if (deletedTaskMap != null) {
+      final deletedTask = TaskHelper.fromMap(deletedTaskMap);
+      await _dbHelper.deleteRecord(id);
+      setState(() {
+        _deletedTasks.add(deletedTask); // Add to deleted tasks list
+        _expandedTasks.remove(id); // Remove from expanded tasks when deleted
+      });
+    }
+  }
+
+  void _toggleExpansion(int taskId) {
+    setState(() {
+      if (_expandedTasks.contains(taskId)) {
+        _expandedTasks.remove(taskId);
+      } else {
+        _expandedTasks.add(taskId);
+      }
+    });
+  }
+
+  void _undoDelete(TaskHelper deletedTask) {
+    setState(() {
+      _deletedTasks.remove(deletedTask); // Remove from deleted tasks list
+      _dbHelper
+          .insertRecord(deletedTask.toMap()); // Re-insert task into database
+      _loadTasks(); // Reload tasks to refresh UI
+    });
   }
 
   @override
@@ -98,12 +137,27 @@ class _TodoScreenState extends State<TodoScreen> {
               itemBuilder: (context, index) {
                 final task = todos[index];
                 return TaskItem(
+                  key: ValueKey(task.id),
                   task: task,
                   onUpdate: (updatedTask) {
                     _updateTask(updatedTask);
                   },
                   onDelete: () {
-                    _deleteTask(task.id); // Use task ID for deletion
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('${task.title} is deleted'),
+                        action: SnackBarAction(
+                          label: 'Undo',
+                          onPressed: () {
+                            _undoDelete(task);
+                          },
+                        ),
+                      ),
+                    );
+                    _deleteTask(task.id);
+                  },
+                  onCollapse: () {
+                    _toggleExpansion(task.id);
                   },
                 );
               },
@@ -119,12 +173,15 @@ class TaskItem extends StatefulWidget {
   final TaskHelper task;
   final Function(TaskHelper) onUpdate;
   final Function() onDelete;
+  final Function() onCollapse;
 
   TaskItem({
+    required Key key, // Ensure unique key is passed
     required this.task,
     required this.onUpdate,
     required this.onDelete,
-  });
+    required this.onCollapse,
+  }) : super(key: key);
 
   @override
   _TaskItemState createState() => _TaskItemState();
@@ -135,6 +192,7 @@ class _TaskItemState extends State<TaskItem> {
   late Set<String> _selectedDays;
   late TimeOfDay _selectedTime;
   bool _isExpanded = false;
+  bool _needsDaysUpdate = false; // Track if the week days need updating
   late PrayerTimes prayerTimes;
   late DateTime currentTime;
   late final SunnahTimes sunnahTimes;
@@ -179,7 +237,12 @@ class _TaskItemState extends State<TaskItem> {
     super.dispose();
   }
 
-  // Function to get days in order
+  void _toggleExpansion() {
+    setState(() {
+      _isExpanded = !_isExpanded;
+    });
+  }
+
   String _getOrderedDaysOfWeek(List<String> daysOfWeek) {
     List<String> orderedDays = _weekDaysOrder
         .where((day) => daysOfWeek.contains(day.toUpperCase()))
@@ -191,7 +254,6 @@ class _TaskItemState extends State<TaskItem> {
             : orderedDays.join(', ').toLowerCase();
   }
 
-// Example of passing prayerTimes and sunnahTimes to _selectTime
   Future<void> _selectTime(BuildContext context) async {
     final TimeOfDay? picked = await showTimePicker(
       context: context,
@@ -200,7 +262,6 @@ class _TaskItemState extends State<TaskItem> {
     if (picked != null && picked != _selectedTime) {
       setState(() {
         _selectedTime = picked;
-        // Update the task's time
         widget.task.time = DateTime(
           DateTime.now().year,
           DateTime.now().month,
@@ -208,15 +269,31 @@ class _TaskItemState extends State<TaskItem> {
           _selectedTime.hour,
           _selectedTime.minute,
         );
-        // Assuming prayerTimes and sunnahTimes are available
         widget.task.associatedPrayer = PrayerUtils.getAssociatedPrayer(
           widget.task.time,
-          prayerTimes, // Ensure prayerTimes is properly initialized
-          sunnahTimes, // Ensure sunnahTimes is properly initialized
+          prayerTimes,
+          sunnahTimes,
         );
-        widget.onUpdate(widget.task); // Notify parent to update task
+        _needsDaysUpdate = true;
       });
     }
+  }
+
+  void _applyUpdates() {
+    widget.task.daysOfWeek = _selectedDays.toList();
+    widget.task.title = _titleController.text;
+    widget.task.time = DateTime(
+      DateTime.now().year,
+      DateTime.now().month,
+      DateTime.now().day,
+      _selectedTime.hour,
+      _selectedTime.minute,
+    );
+
+    widget.onUpdate(widget.task);
+    setState(() {
+      _needsDaysUpdate = false;
+    });
   }
 
   @override
@@ -224,9 +301,14 @@ class _TaskItemState extends State<TaskItem> {
     return Padding(
       padding: const EdgeInsets.all(8.0),
       child: ExpansionTile(
+        key: widget.key, // Use passed key
+        trailing: Icon(Icons.keyboard_arrow_down_rounded),
         onExpansionChanged: (expanded) {
           setState(() {
-            _isExpanded = expanded; // Update the expansion state
+            _isExpanded = expanded;
+            if (!expanded && _needsDaysUpdate) {
+              _applyUpdates();
+            }
           });
         },
         backgroundColor:
@@ -295,8 +377,6 @@ class _TaskItemState extends State<TaskItem> {
                     setState(() {
                       widget.task.title = value;
                     });
-                    widget
-                        .onUpdate(widget.task); // Notify parent to update task
                   },
                 ),
                 SizedBox(height: 10),
@@ -305,26 +385,19 @@ class _TaskItemState extends State<TaskItem> {
                     spacing: 1.0,
                     children: _weekDaysOrder
                         .map((day) => ChoiceChip(
+                              labelStyle: GoogleFonts.silkscreen(),
                               showCheckmark: false,
-                              label: Text(day
-                                  .substring(0, 1)
-                                  .toUpperCase()), // Use uppercase
-                              selected: _selectedDays.contains(day
-                                  .toUpperCase()), // Convert day to uppercase for comparison
+                              label: Text(day.substring(0, 1).toUpperCase()),
+                              selected:
+                                  _selectedDays.contains(day.toUpperCase()),
                               onSelected: (selected) {
                                 setState(() {
                                   if (selected) {
-                                    _selectedDays.add(day
-                                        .toUpperCase()); // Convert to uppercase
+                                    _selectedDays.add(day.toUpperCase());
                                   } else {
-                                    _selectedDays.remove(day
-                                        .toUpperCase()); // Convert to uppercase
+                                    _selectedDays.remove(day.toUpperCase());
                                   }
-                                  // Update task's daysOfWeek
-                                  widget.task.daysOfWeek =
-                                      _selectedDays.toList();
-                                  widget.onUpdate(widget
-                                      .task); // Notify parent to update task
+                                  _needsDaysUpdate = true;
                                 });
                               },
                               shape: CircleBorder(),
@@ -344,14 +417,34 @@ class _TaskItemState extends State<TaskItem> {
                   leading: Icon(Icons.access_time_outlined),
                   onTap: () => _selectTime(context),
                 ),
-                ListTile(
-                  title: Text('Delete'),
-                  leading: Icon(Icons.delete_outline),
-                  onTap: () => widget.onDelete(),
-                ),
               ],
             ),
           ),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              ElevatedButton(
+                child: Text('Delete'),
+                onPressed: () {
+                  widget.onCollapse(); // Notify parent to collapse this tile
+                  widget.onDelete();
+                },
+              ),
+              ElevatedButton(
+                style: ButtonStyle(
+                    backgroundColor: MaterialStateProperty.all<Color>(
+                        Theme.of(context).colorScheme.primary),
+                    foregroundColor: MaterialStateProperty.all<Color>(
+                        Theme.of(context).colorScheme.onPrimary)),
+                child: Text('Update'),
+                onPressed: () {
+                  widget.onCollapse(); // Notify parent to collapse this tile
+                  _applyUpdates();
+                },
+              ),
+            ],
+          ),
+          Text(" "),
         ],
       ),
     );

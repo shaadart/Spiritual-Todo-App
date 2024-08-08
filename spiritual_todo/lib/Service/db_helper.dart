@@ -1,4 +1,4 @@
-import 'dart:io';
+import 'dart:async';
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
@@ -13,6 +13,9 @@ class DatabaseHelper {
   final String columnAssociatedPrayer;
   final String columnDaysOfWeek;
 
+  final StreamController<List<Map<String, dynamic>>> _streamController =
+      StreamController.broadcast();
+
   DatabaseHelper({
     required this.dbName,
     required this.dbVersion,
@@ -22,7 +25,9 @@ class DatabaseHelper {
     required this.columnTime,
     required this.columnAssociatedPrayer,
     required this.columnDaysOfWeek,
-  });
+  }) {
+    _init();
+  }
 
   Future<Database> get database async {
     return openDatabase(
@@ -31,6 +36,13 @@ class DatabaseHelper {
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
+  }
+
+  Future<void> _init() async {
+    final db = await database;
+    // Fetch initial data and broadcast to the stream
+    final records = await db.query(dbTable);
+    _streamController.add(records);
   }
 
   Future<void> _onCreate(Database db, int version) async {
@@ -48,12 +60,10 @@ class DatabaseHelper {
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < newVersion) {
       if (oldVersion < 2) {
-        // Example of adding a new column
         await db.execute('''
           ALTER TABLE $dbTable ADD COLUMN $columnDaysOfWeek TEXT
         ''');
       }
-      // Add other schema migrations here if needed
     }
   }
 
@@ -62,29 +72,59 @@ class DatabaseHelper {
     await deleteDatabase('$path/$dbName');
   }
 
-  Future<void> initDB() async {
-    await database;
-  }
-
   Future<int> insertRecord(Map<String, dynamic> row) async {
     final db = await database;
-    return await db.insert(dbTable, row);
+    int id = await db.insert(dbTable, row);
+    _notifyChange(); // Notify stream of changes
+    return id;
   }
 
   Future<List<Map<String, dynamic>>> queryDatabase() async {
     final db = await database;
-    return await db.query(dbTable);
+    final result = await db.query(dbTable);
+    return result;
   }
 
   Future<int> updateRecord(Map<String, dynamic> row) async {
     final db = await database;
     int id = row[columnId];
-    return await db.update(dbTable, row, where: '$columnId = ?', whereArgs: [id]);
+    int result =
+        await db.update(dbTable, row, where: '$columnId = ?', whereArgs: [id]);
+    _notifyChange(); // Notify stream of changes
+    return result;
   }
 
   Future<int> deleteRecord(int id) async {
     final db = await database;
-    return await db.delete(dbTable, where: '$columnId = ?', whereArgs: [id]);
+    int result =
+        await db.delete(dbTable, where: '$columnId = ?', whereArgs: [id]);
+    _notifyChange(); // Notify stream of changes
+    return result;
+  }
+
+  Future<Map<String, dynamic>?> getTask(int id) async {
+    final db = await database;
+    List<Map<String, dynamic>> maps = await db.query(
+      dbTable,
+      where: '$columnId = ?',
+      whereArgs: [id],
+    );
+    if (maps.isNotEmpty) {
+      return maps.first;
+    }
+    return null;
+  }
+
+  void _notifyChange() async {
+    final db = await database;
+    final records = await db.query(dbTable);
+    _streamController.add(records);
+  }
+
+  Stream<List<Map<String, dynamic>>> get stream => _streamController.stream;
+
+  void dispose() {
+    _streamController.close();
   }
 
   Future<int> countTasksForPrayer(String prayerLabel) async {

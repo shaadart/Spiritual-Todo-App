@@ -1,6 +1,7 @@
 // lib/utils/prayer_utils.dart
 import 'package:adhan/adhan.dart';
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 
 class PrayerTime {
   final String label;
@@ -12,7 +13,7 @@ class PrayerTime {
 class TaskHelper {
   final int id;
   String title;
-  DateTime time; // Change from final to mutable
+  DateTime time;
   String associatedPrayer;
   List<String> daysOfWeek;
 
@@ -29,6 +30,49 @@ class TaskHelper {
     );
   }
 
+  DateTime getUpcomingDateTime(DateTime currentTime) {
+    DateTime taskDateTime = DateTime(
+      currentTime.year,
+      currentTime.month,
+      currentTime.day,
+      time.hour,
+      time.minute,
+    );
+
+    if (currentTime.isAfter(taskDateTime)) {
+      taskDateTime = taskDateTime.add(Duration(days: 1));
+    }
+
+    // Adjust taskDateTime to the next valid day
+    while (!daysOfWeek.contains(_getDayString(taskDateTime.weekday))) {
+      taskDateTime = taskDateTime.add(Duration(days: 1));
+    }
+
+    return taskDateTime;
+  }
+
+  // Helper method to get day string from weekday number
+  String _getDayString(int weekday) {
+    switch (weekday) {
+      case DateTime.monday:
+        return 'MON';
+      case DateTime.tuesday:
+        return 'TUE';
+      case DateTime.wednesday:
+        return 'WED';
+      case DateTime.thursday:
+        return 'THU';
+      case DateTime.friday:
+        return 'FRI';
+      case DateTime.saturday:
+        return 'SAT';
+      case DateTime.sunday:
+        return 'SUN';
+      default:
+        return '';
+    }
+  }
+
   Map<String, dynamic> toMap() {
     return {
       'id': id,
@@ -39,23 +83,23 @@ class TaskHelper {
     };
   }
 
-  static DateTime _parseTime(String timeStr) {
-    final now = DateTime.now();
-    final parts = timeStr.split(':');
-    return DateTime(
-      now.year,
-      now.month,
-      now.day,
-      int.parse(parts[0]),
-      int.parse(parts[1]),
-    );
+  static DateTime _parseTime(String timeString) {
+    try {
+      print('Parsing time string: $timeString');
+      // Trim whitespace before parsing
+      return DateFormat('hh:mm a').parse(timeString.trim());
+    } catch (e) {
+      print('Error parsing time string: $timeString');
+      print('Exception: $e');
+      // Handle the error as needed
+      return DateTime.now(); // Default return value on error
+    }
   }
 
   static String _formatTime(DateTime dateTime) {
     return '${dateTime.hour}:${dateTime.minute.toString().padLeft(2, '0')}';
   }
 }
-
 
 class PrayerUtils {
   static String getAssociatedPrayer(
