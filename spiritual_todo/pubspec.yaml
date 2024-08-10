@@ -36,8 +36,11 @@ dependencies:
   google_fonts:
   animated_bottom_navigation_bar: ^1.3.3
   shimmer: 
+  pixelarticons: ^0.4.0
   geolocator:
   permission_handler:
+  awesome_notifications:
+  workmanager: 
 
 
   # The following adds the Cupertino Icons font to your application.

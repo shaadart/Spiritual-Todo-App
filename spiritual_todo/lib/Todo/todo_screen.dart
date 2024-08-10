@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:adhan/adhan.dart';
+import 'package:awesome_notifications/awesome_notifications.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
@@ -7,13 +8,16 @@ import 'package:spiritual_todo/Service/db_helper.dart'; // Import your DB helper
 import '../Models/prayer_model.dart'; // Import your TaskHelper model
 
 class TodoScreen extends StatefulWidget {
+  const TodoScreen({super.key, required this.title});
+
+  final String title;
+
   @override
   State<TodoScreen> createState() => _TodoScreenState();
 }
 
 class _TodoScreenState extends State<TodoScreen> {
-  final StreamController<List<TaskHelper>> _tasksController =
-      StreamController.broadcast();
+  final _tasksController = StreamController<List<TaskHelper>>.broadcast();
   final DatabaseHelper _dbHelper = DatabaseHelper(
     dbName: "userDatabase.db",
     dbVersion: 3,
@@ -31,7 +35,7 @@ class _TodoScreenState extends State<TodoScreen> {
   @override
   void initState() {
     super.initState();
-    _startPolling();
+
     _loadTasks();
   }
 
@@ -41,40 +45,60 @@ class _TodoScreenState extends State<TodoScreen> {
     super.dispose();
   }
 
-  void _startPolling() {
-    _dbHelper.stream.listen((records) {
-      final tasks = records.map((map) => TaskHelper.fromMap(map)).toList();
-
-      // Sort tasks by their upcoming date and time
-      tasks.sort((a, b) {
-        DateTime now = DateTime.now();
-        DateTime aUpcoming = a.getUpcomingDateTime(now);
-        DateTime bUpcoming = b.getUpcomingDateTime(now);
-        return aUpcoming.compareTo(bUpcoming);
-      });
-
-      _tasksController.add(tasks);
-    });
+  Future<Object> getMaxId() async {
+    return await _dbHelper.getMaxId();
   }
 
-  Future<void> _loadTasks() async {
-    final records = await _dbHelper.queryDatabase(); // Fetch all records
+  void _loadTasks() async {
+    final records = await _dbHelper.queryDatabase();
+    print("Fetched records: $records"); // Debug print to check fetched records
     final tasks = records.map((map) => TaskHelper.fromMap(map)).toList();
-
-    // Sort tasks by their upcoming date and time
     tasks.sort((a, b) {
       DateTime now = DateTime.now();
       DateTime aUpcoming = a.getUpcomingDateTime(now);
       DateTime bUpcoming = b.getUpcomingDateTime(now);
       return aUpcoming.compareTo(bUpcoming);
     });
-
     _tasksController.add(tasks);
+  }
+
+  void _scheduleNotification(TaskHelper task) {
+    DateTime upcomingDateTime = task.getUpcomingDateTime(DateTime.now());
+
+    print(
+        "Scheduling notification for: $upcomingDateTime"); // Debug print to check scheduled time
+
+    AwesomeNotifications().createNotification(
+      content: NotificationContent(
+        id: task.id,
+        channelKey: 'basic_channel',
+        body: 'Reminder',
+        title: task.title,
+        autoDismissible: false,
+        displayOnForeground: true,
+        displayOnBackground: true,
+        wakeUpScreen: true,
+        fullScreenIntent: true,
+        payload: {
+          'associatedPrayer': task.associatedPrayer,
+          'daysOfWeek': task.daysOfWeek.join(','),
+        },
+      ),
+      schedule:
+          NotificationCalendar.fromDate(date: upcomingDateTime, repeats: true),
+    );
   }
 
   Future<void> _updateTask(TaskHelper task) async {
     await _dbHelper.updateRecord(task.toMap());
+
+    // Cancel existing notification
+    AwesomeNotifications().cancel(task.id);
+
+    // Schedule new notification
+    _scheduleNotification(task);
   }
+
 
   Future<void> _deleteTask(int id) async {
     final deletedTaskMap =
@@ -82,6 +106,7 @@ class _TodoScreenState extends State<TodoScreen> {
     if (deletedTaskMap != null) {
       final deletedTask = TaskHelper.fromMap(deletedTaskMap);
       await _dbHelper.deleteRecord(id);
+      AwesomeNotifications().cancel(id); // Cancel the notification
       setState(() {
         _deletedTasks.add(deletedTask); // Add to deleted tasks list
         _expandedTasks.remove(id); // Remove from expanded tasks when deleted
@@ -111,60 +136,61 @@ class _TodoScreenState extends State<TodoScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        centerTitle: true,
-        title: Text(
-          'Todo',
-          style: GoogleFonts.pixelifySans(
-            fontWeight: FontWeight.bold,
-            color: Theme.of(context).colorScheme.secondary,
+      
+        appBar: AppBar(
+          centerTitle: true,
+          title: Text(
+            'Todo',
+            style: GoogleFonts.pixelifySans(
+              fontWeight: FontWeight.bold,
+              color: Theme.of(context).colorScheme.secondary,
+            ),
           ),
         ),
-      ),
-      body: StreamBuilder<List<TaskHelper>>(
-        stream: _tasksController.stream,
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return Center(child: CircularProgressIndicator());
-          } else if (snapshot.hasError) {
-            return Center(child: Text('Error: ${snapshot.error}'));
-          } else if (!snapshot.hasData || snapshot.data!.isEmpty) {
-            return Center(child: Text('No tasks found'));
-          } else {
-            final todos = snapshot.data!;
-            return ListView.builder(
-              itemCount: todos.length,
-              itemBuilder: (context, index) {
-                final task = todos[index];
-                return TaskItem(
-                  key: ValueKey(task.id),
-                  task: task,
-                  onUpdate: (updatedTask) {
-                    _updateTask(updatedTask);
-                  },
-                  onDelete: () {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text('${task.title} is deleted'),
-                        action: SnackBarAction(
-                          label: 'Undo',
-                          onPressed: () {
-                            _undoDelete(task);
-                          },
-                        ),
-                      ),
-                    );
-                    _deleteTask(task.id);
-                  },
-                  onCollapse: () {
-                    _toggleExpansion(task.id);
-                  },
-                );
-              },
-            );
-          }
+        body: StreamBuilder<List<TaskHelper>>(
+  stream: _tasksController.stream,
+  builder: (context, snapshot) {
+    if (snapshot.connectionState == ConnectionState.waiting) {
+      return Center(child: CircularProgressIndicator());
+    } else if (snapshot.hasError) {
+      return Center(child: Text('Error: ${snapshot.error}'));
+    } else if (!snapshot.hasData || snapshot.data!.isEmpty) {
+      return Center(child: Text('No tasks found'));
+    } else {
+      final todos = snapshot.data!;
+      return ListView.builder(
+        itemCount: todos.length,
+        itemBuilder: (context, index) {
+          final task = todos[index];
+          return TaskItem(
+            key: ValueKey(task.id),
+            task: task,
+            onUpdate: (updatedTask) {
+              _updateTask(updatedTask);
+            },
+            onDelete: () {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('${task.title} is deleted'),
+                  action: SnackBarAction(
+                    label: 'Undo',
+                    onPressed: () {
+                      _undoDelete(task);
+                    },
+                  ),
+                ),
+              );
+              _deleteTask(task.id);
+            },
+            onCollapse: () {
+              _toggleExpansion(task.id);
+            },
+          );
         },
-      ),
+      );
+    }
+  },
+),
     );
   }
 }
@@ -192,13 +218,14 @@ class _TaskItemState extends State<TaskItem> {
   late Set<String> _selectedDays;
   late TimeOfDay _selectedTime;
   bool _isExpanded = false;
-  bool _needsDaysUpdate = false; // Track if the week days need updating
+  bool _needsUpdate = false; // Track if updates are needed
   late PrayerTimes prayerTimes;
   late DateTime currentTime;
   late final SunnahTimes sunnahTimes;
   final Coordinates coordinates =
       Coordinates(21.2588, 81.6290); // Replace with your coordinates
   final params = CalculationMethod.karachi.getParameters();
+  bool _isNotificationEnabled = true;
 
   void _updatePrayerTimes() {
     setState(() {
@@ -229,6 +256,12 @@ class _TaskItemState extends State<TaskItem> {
         widget.task.daysOfWeek.map((day) => day.toUpperCase()).toSet();
     _selectedTime =
         TimeOfDay.fromDateTime(widget.task.time); // Initialize with task's time
+  }
+
+  void _toggleNotification() {
+    setState(() {
+      _applyUpdates(); // Apply updates to the task
+    });
   }
 
   @override
@@ -262,19 +295,7 @@ class _TaskItemState extends State<TaskItem> {
     if (picked != null && picked != _selectedTime) {
       setState(() {
         _selectedTime = picked;
-        widget.task.time = DateTime(
-          DateTime.now().year,
-          DateTime.now().month,
-          DateTime.now().day,
-          _selectedTime.hour,
-          _selectedTime.minute,
-        );
-        widget.task.associatedPrayer = PrayerUtils.getAssociatedPrayer(
-          widget.task.time,
-          prayerTimes,
-          sunnahTimes,
-        );
-        _needsDaysUpdate = true;
+        _needsUpdate = true; // Flag that an update is needed
       });
     }
   }
@@ -292,7 +313,7 @@ class _TaskItemState extends State<TaskItem> {
 
     widget.onUpdate(widget.task);
     setState(() {
-      _needsDaysUpdate = false;
+      _needsUpdate = false; // Reset flag after update
     });
   }
 
@@ -306,7 +327,7 @@ class _TaskItemState extends State<TaskItem> {
         onExpansionChanged: (expanded) {
           setState(() {
             _isExpanded = expanded;
-            if (!expanded && _needsDaysUpdate) {
+            if (!expanded && _needsUpdate) {
               _applyUpdates();
             }
           });
@@ -315,34 +336,31 @@ class _TaskItemState extends State<TaskItem> {
             Theme.of(context).colorScheme.onSecondary.withOpacity(0.34),
         leading: Icon(Icons.circle_outlined),
         title: Opacity(
-          opacity: _isExpanded ? 0.21 : 0.89,
+          opacity: _isExpanded ? 0.34 : 0.89,
           child: Text(
             widget.task.title,
             style: TextStyle(fontWeight: FontWeight.bold),
           ),
         ),
         subtitle: Opacity(
-          opacity: _isExpanded ? 0.21 : 0.89,
+          opacity: _isExpanded ? 0.34 : 0.89,
           child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(
                 children: [
                   Icon(Icons.access_time, size: 16),
                   SizedBox(width: 4),
                   Text(
-                    DateFormat('hh:mm a').format(
-                      DateTime(
-                        DateTime.now().year,
-                        DateTime.now().month,
-                        DateTime.now().day,
-                        widget.task.time.hour,
-                        widget.task.time.minute,
-                      ),
-                    ),
+                    DateFormat('hh:mm a').format(widget.task.time),
                     style: TextStyle(fontSize: 14),
                   ),
                   SizedBox(width: 10),
-                  Icon(Icons.notifications_outlined, size: 16),
+                  Icon(
+                      _isNotificationEnabled
+                          ? Icons.notifications_active_outlined
+                          : Icons.notifications_off_outlined,
+                      size: 16),
                   SizedBox(width: 4),
                   Text(
                     widget.task.associatedPrayer,
@@ -375,7 +393,7 @@ class _TaskItemState extends State<TaskItem> {
                   decoration: InputDecoration(labelText: 'Title'),
                   onChanged: (value) {
                     setState(() {
-                      widget.task.title = value;
+                      _needsUpdate = true; // Flag that an update is needed
                     });
                   },
                 ),
@@ -397,7 +415,8 @@ class _TaskItemState extends State<TaskItem> {
                                   } else {
                                     _selectedDays.remove(day.toUpperCase());
                                   }
-                                  _needsDaysUpdate = true;
+                                  _needsUpdate =
+                                      true; // Flag that an update is needed
                                 });
                               },
                               shape: CircleBorder(),
@@ -416,6 +435,15 @@ class _TaskItemState extends State<TaskItem> {
                   ))}'),
                   leading: Icon(Icons.access_time_outlined),
                   onTap: () => _selectTime(context),
+                ),
+                ListTile(
+                  title: Text(_isNotificationEnabled
+                      ? 'Notification On'
+                      : 'Notification Off'),
+                  leading: Icon(_isNotificationEnabled
+                      ? Icons.notifications_active_outlined
+                      : Icons.notifications_off_outlined),
+                  onTap: _toggleNotification,
                 ),
               ],
             ),
@@ -437,10 +465,13 @@ class _TaskItemState extends State<TaskItem> {
                     foregroundColor: MaterialStateProperty.all<Color>(
                         Theme.of(context).colorScheme.onPrimary)),
                 child: Text('Update'),
-                onPressed: () {
-                  widget.onCollapse(); // Notify parent to collapse this tile
-                  _applyUpdates();
-                },
+                onPressed: _needsUpdate // Enable button only when needed
+                    ? () {
+                        widget
+                            .onCollapse(); // Notify parent to collapse this tile
+                        _applyUpdates();
+                      }
+                    : null,
               ),
             ],
           ),

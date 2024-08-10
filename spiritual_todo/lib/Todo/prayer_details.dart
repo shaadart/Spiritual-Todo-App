@@ -61,19 +61,20 @@ class _PrayerDetailsScreenState extends State<PrayerDetailsScreen> {
     });
   }
 
-  void _addTask(String title, DateTime time) {
+  void _addTask(String title, DateTime time, List daysOfWeek) {
     final newId = _tasks.isEmpty
         ? 1
         : (_tasks.map((task) => task.id).reduce((a, b) => a > b ? a : b) + 1);
 
     setState(() {
       _tasks.add(TaskHelper(
-          newId,
-          title,
-          time,
-          PrayerUtils.getAssociatedPrayer(time, prayerTimes, sunnahTimes),
-          [] // Initialize with empty days, can be updated later
-          ));
+        newId,
+        title,
+        time,
+        PrayerUtils.getAssociatedPrayer(time, prayerTimes, sunnahTimes),
+        []
+        // Initialize with empty days, can be updated later
+      ));
     });
   }
 
@@ -122,7 +123,7 @@ class _PrayerDetailsScreenState extends State<PrayerDetailsScreen> {
             builder: (context) {
               return AddTaskSheet(
                 onAddTask: (title, time) {
-                  _addTask(title, time);
+                  _addTask(title, time, []);
                 },
                 prayerTimes: prayerTimes,
               );

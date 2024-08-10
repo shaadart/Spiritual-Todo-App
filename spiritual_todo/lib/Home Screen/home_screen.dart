@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:adhan/adhan.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:spiritual_todo/Todo/premium_page.dart';
 import 'package:staggered_grid_view_flutter/widgets/staggered_grid_view.dart';
 import 'package:staggered_grid_view_flutter/widgets/staggered_tile.dart';
 
@@ -11,19 +14,21 @@ import '../Todo/add_todo.dart';
 import '../Todo/prayer_details.dart';
 
 class HomeScreen extends StatefulWidget {
+  const HomeScreen({super.key, required this.title});
+
+  final String title;
+
   @override
   _HomeScreenState createState() => _HomeScreenState();
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  int _selectedIndex = 0;
-  final Coordinates coordinates =
-      Coordinates(21.2588, 81.6290); // Replace with your coordinates
-  final params = CalculationMethod.karachi.getParameters();
-  late PrayerTimes prayerTimes;
-  late final sunnahTimes = SunnahTimes(prayerTimes);
-
+  Coordinates? _currentCoordinates;
+  PrayerTimes? prayerTimes;
+  SunnahTimes? sunnahTimes;
   late DateTime currentTime;
+  final PrayerTimesDatabaseHelper prayerDbHelper = PrayerTimesDatabaseHelper();
+
   final DatabaseHelper dbHelper = DatabaseHelper(
     dbName: "userDatabase.db",
     dbVersion: 3,
@@ -59,44 +64,150 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // void _showAddTaskSheet() {
-  //   showModalBottomSheet(
-  //     context: context,
-  //     builder: (context) {
-  //       return AddTaskSheet(
-  //         onAddTask: (title, time) {
-  //           setState(() {
-  //             // Update tasks list or state
-  //           });
-  //         },
-  //         prayerTimes: prayerTimes,
-  //       );
-  //     },
-  //   );
-  // }
+  void _showPremiumPageDialog() async {
+    showDialog(
+      context: context,
+      builder: (context) {
+        return Dialog(
+          insetPadding: EdgeInsets.zero,
+          child: PremiumPage(),
+        );
+      },
+    );
+  }
 
-  @override
-  void initState() {
-    super.initState();
-    _updatePrayerTimes();
-    // print('Midnight Time: ${sunnahTimes.lastThirdOfTheNight}');
+Future<void> _initializeCoordinates() async {
+  // Request location permissions
+  final permissionStatus = await Permission.location.request();
+
+  if (permissionStatus.isGranted) {
+    try {
+      // Fetch current position
+      Position position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+
+      setState(() {
+        _currentCoordinates = Coordinates(position.latitude, position.longitude);
+      });
+
+      // Fetch prayer times
+      await _fetchPrayerTimes();
+    } catch (e) {
+      print('Error fetching coordinates: $e');
+    }
+  } else {
+    print('Location permission denied.');
+  }
+}
+@override
+void initState() {
+  super.initState();
+  _initializeCoordinates();
+}
+  Future<void> _fetchPrayerTimes() async {
+
+    if (_currentCoordinates == null) {
+      print('Error: Current coordinates are not set.');
+      return;
+    }
+    print("Fetching prayer times...");
+
+    final today = DateFormat('yyyy-MM-dd').format(DateTime.now());
+    final storedPrayerTimes = await prayerDbHelper.getPrayerTimesByDate(today);
+
+    if (storedPrayerTimes != null) {
+      double? latitude = storedPrayerTimes['latitude'];
+      double? longitude = storedPrayerTimes['longitude'];
+
+      if (latitude == null || longitude == null) {
+        print("Error: Latitude or Longitude is null.");
+        return;
+      }
+
+      // Update _currentCoordinates
+      _currentCoordinates = Coordinates(latitude, longitude);
+      print(
+          'Updated Coordinates: Latitude=${_currentCoordinates?.latitude}, Longitude=${_currentCoordinates?.longitude}');
+
+      // Debug: Verify coordinates immediately after setting
+      print(
+          'Coordinates immediately after setting: Latitude=${_currentCoordinates?.latitude}, Longitude=${_currentCoordinates?.longitude}');
+
+      var dateComponents = DateComponents.from(DateTime.now());
+      final calculationParameters =
+          CalculationMethod.muslim_world_league.getParameters();
+      calculationParameters.madhab = Madhab.shafi;
+
+      setState(() {
+        prayerTimes = PrayerTimes(
+            _currentCoordinates!, dateComponents, calculationParameters);
+        sunnahTimes = SunnahTimes(prayerTimes!);
+        currentTime = DateTime.now();
+      });
+    } else {
+      print("No prayer times found for today. Fetching new times.");
+
+      if (_currentCoordinates == null) {
+        print('Error: Current coordinates are not set.');
+        return;
+      }
+
+      final fetchedPrayerTimes = PrayerTimes.today(
+        _currentCoordinates!,
+        CalculationMethod.karachi.getParameters(),
+      );
+
+      sunnahTimes = SunnahTimes(fetchedPrayerTimes);
+      await prayerDbHelper.insertPrayerTimes({
+        'date': today,
+        'fajr': fetchedPrayerTimes.fajr.toIso8601String(),
+        'sunrise': fetchedPrayerTimes.sunrise.toIso8601String(),
+        'dhuhr': fetchedPrayerTimes.dhuhr.toIso8601String(),
+        'asr': fetchedPrayerTimes.asr.toIso8601String(),
+        'maghrib': fetchedPrayerTimes.maghrib.toIso8601String(),
+        'isha': fetchedPrayerTimes.isha.toIso8601String(),
+        'midnight': sunnahTimes!.lastThirdOfTheNight.toIso8601String(),
+        'latitude': _currentCoordinates?.latitude ?? 0.0,
+        'longitude': _currentCoordinates?.longitude ?? 0.0,
+      });
+
+      setState(() {
+        prayerTimes = fetchedPrayerTimes;
+        currentTime = DateTime.now();
+      });
+    }
   }
 
   void _updatePrayerTimes() {
-    setState(() {
-      prayerTimes = PrayerTimes.today(coordinates, params);
-      currentTime = DateTime.now();
-    });
-    print("""
-    All prayer times: 
-    Fajr: ${prayerTimes.fajr}
-    Sunrise: ${prayerTimes.sunrise}
-    Dhuhr: ${prayerTimes.dhuhr}
-    Asr: ${prayerTimes.asr}
-    Maghrib: ${prayerTimes.maghrib}
-    Isha: ${prayerTimes.isha}
-    Midnight: ${sunnahTimes.lastThirdOfTheNight}
-    """);
+    if (_currentCoordinates == null) {
+      print('Error: Current coordinates are not set.');
+      return;
+    }
+
+    final params = CalculationMethod.karachi.getParameters();
+    params.madhab = Madhab.hanafi;
+
+    try {
+      setState(() {
+        prayerTimes = PrayerTimes.today(_currentCoordinates!, params);
+        sunnahTimes = SunnahTimes(prayerTimes!);
+        currentTime = DateTime.now();
+      });
+
+      print("""
+      All prayer times: 
+      Fajr: ${prayerTimes!.fajr}
+      Sunrise: ${prayerTimes!.sunrise}
+      Dhuhr: ${prayerTimes!.dhuhr}
+      Asr: ${prayerTimes!.asr}
+      Maghrib: ${prayerTimes!.maghrib}
+      Isha: ${prayerTimes!.isha}
+      Midnight: ${sunnahTimes!.lastThirdOfTheNight}
+      """);
+    } catch (e) {
+      print('Error updating prayer times: $e');
+    }
   }
 
   Future<int> _getTaskCountForPrayer(String prayerLabel) async {
@@ -105,14 +216,27 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    print(
+        'Current Coordinates: Latitude=${_currentCoordinates?.latitude}, Longitude=${_currentCoordinates?.longitude}');
+
+    if (_currentCoordinates == null) {
+      // Handle the case where coordinates are not set
+      return Center(child: Text('Error: Current coordinates are not set.'));
+    }
+
+    if (prayerTimes == null || sunnahTimes == null) {
+      // Show a loading spinner or an error message
+      return Center(child: CircularProgressIndicator());
+    }
+
     final List<PrayerTime> prayerTimesList = [
-      PrayerTime('Fajr', prayerTimes.fajr),
-      PrayerTime('Sunrise', prayerTimes.sunrise),
-      PrayerTime('Dhuhr', prayerTimes.dhuhr),
-      PrayerTime('Asr', prayerTimes.asr),
-      PrayerTime('Maghrib', prayerTimes.maghrib),
-      PrayerTime('Isha', prayerTimes.isha),
-      PrayerTime('Midnight', sunnahTimes.lastThirdOfTheNight), // Add Midnight
+      PrayerTime('Fajr', prayerTimes!.fajr),
+      PrayerTime('Sunrise', prayerTimes!.sunrise),
+      PrayerTime('Dhuhr', prayerTimes!.dhuhr),
+      PrayerTime('Asr', prayerTimes!.asr),
+      PrayerTime('Maghrib', prayerTimes!.maghrib),
+      PrayerTime('Isha', prayerTimes!.isha),
+      PrayerTime('Midnight', sunnahTimes!.lastThirdOfTheNight),
     ];
 
     // Sort prayers based on their proximity to the current time
@@ -165,6 +289,15 @@ class _HomeScreenState extends State<HomeScreen> {
     return Scaffold(
       resizeToAvoidBottomInset: true,
       appBar: AppBar(
+        actions: [
+          OutlinedButton.icon(
+              onPressed: () {
+                _showPremiumPageDialog();
+              },
+              label: Text("Premium"),
+              icon: Icon(Icons.star)),
+          Text("\t\t"),
+        ],
         leading: Padding(
           padding: const EdgeInsets.all(8.0),
           child: CircleAvatar(
@@ -172,13 +305,24 @@ class _HomeScreenState extends State<HomeScreen> {
                 'https://avatars.githubusercontent.com/u/47231161?v=4'),
           ),
         ),
-        centerTitle: true,
-        title: Text(
-          'Spiritual Todo',
-          style: GoogleFonts.pixelifySans(
-            fontWeight: FontWeight.bold,
-            color: Theme.of(context).colorScheme.secondary,
-          ),
+        title: Row(
+          children: [
+            Text(
+              widget.title + "\t",
+              style: GoogleFonts.pixelifySans(
+                fontWeight: FontWeight.bold,
+                color: Theme.of(context).colorScheme.secondary,
+              ),
+            ),
+            // Text(
+            //   " premium",
+            //   style: GoogleFonts.pixelifySans(
+            //     fontSize: 13,
+            //     fontStyle: FontStyle.italic,
+            //     color: Theme.of(context).colorScheme.secondary,
+            //   ),
+            // ),
+          ],
         ),
       ),
       body: SingleChildScrollView(
@@ -207,10 +351,10 @@ class _HomeScreenState extends State<HomeScreen> {
                 itemCount: recentPrayers.length,
                 itemBuilder: (context, index) {
                   final prayer = recentPrayers[index];
-                  final isActive = prayer.time.isBefore(currentTime) &&
-                      prayer.time
-                          .add(Duration(minutes: 30))
-                          .isAfter(currentTime);
+                  // final isActive = prayer.time.isBefore(currentTime) &&
+                  //     prayer.time
+                  //         .add(Duration(minutes: 30))
+                  //         .isAfter(currentTime);
 
                   final taskCount = taskCounts[index];
 
@@ -242,7 +386,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             Text(
                               '${taskCount} tasks',
                               style: TextStyle(
-                                fontSize: isActive ? 14 : 10,
+                                fontSize: 10,
                               ),
                             ),
                           ],
@@ -269,7 +413,6 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
       ),
-
     );
   }
 }

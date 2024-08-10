@@ -10,6 +10,8 @@ class PrayerTime {
   PrayerTime(this.label, this.time);
 }
 
+
+
 class TaskHelper {
   final int id;
   String title;
@@ -85,12 +87,12 @@ class TaskHelper {
 
   static DateTime _parseTime(String timeString) {
     try {
-      print('Parsing time string: $timeString');
+      // print('Parsing time string: $timeString');
       // Trim whitespace before parsing
       return DateFormat('hh:mm a').parse(timeString.trim());
     } catch (e) {
-      print('Error parsing time string: $timeString');
-      print('Exception: $e');
+      // print('Error parsing time string: $timeString');
+      // print('Exception: $e');
       // Handle the error as needed
       return DateTime.now(); // Default return value on error
     }

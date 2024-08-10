@@ -1,8 +1,15 @@
+import 'dart:async';
+
+import 'package:awesome_notifications/awesome_notifications.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:intl/intl.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:adhan/adhan.dart';
+import 'package:pixelarticons/pixel.dart';
+import 'package:spiritual_todo/Service/db_helper.dart';
+import '../Models/prayer_model.dart';
 import '../Todo/add_todo.dart';
 import '../Todo/todo_screen.dart';
 import 'home_screen.dart'; // Import your HomeScreen
@@ -14,48 +21,123 @@ class MainScreen extends StatefulWidget {
 
 class _MainScreenState extends State<MainScreen> {
   int _selectedIndex = 0;
-  late Coordinates _currentCoordinates; // Holds current coordinates
+  Coordinates? _currentCoordinates;
   late PrayerTimes prayerTimes;
-  late final sunnahTimes;
-
+  late final SunnahTimes sunnahTimes;
   late DateTime currentTime;
+  final PrayerTimesDatabaseHelper dbHelper = PrayerTimesDatabaseHelper();
+  final _tasksController = StreamController<List<TaskHelper>>.broadcast();
+  final DatabaseHelper _dbHelper = DatabaseHelper(
+    dbName: "userDatabase.db",
+    dbVersion: 3,
+    dbTable: "TaskTable",
+    columnId: 'id',
+    columnName: 'task',
+    columnTime: 'time',
+    columnAssociatedPrayer: 'associatedPrayer',
+    columnDaysOfWeek: 'daysOfWeek',
+  );
 
   @override
   void initState() {
     super.initState();
+    _loadTasks();
     _initLocation();
-    _updatePrayerTimes();
   }
 
-  Future<void> _initLocation() async {
-    // Request location permission if not granted
+  void _initLocation() async {
     if (await Permission.location.request().isGranted) {
-      // Get current location coordinates
       final location = await Geolocator.getCurrentPosition();
+      final coordinates = Coordinates(location.latitude, location.longitude);
+
+      await dbHelper.insertCoordinates(
+          coordinates.latitude, coordinates.longitude);
+
       setState(() {
-        _currentCoordinates =
-            Coordinates(location.latitude, location.longitude);
-        prayerTimes = PrayerTimes.today(
-            _currentCoordinates, CalculationMethod.karachi.getParameters());
-        sunnahTimes = SunnahTimes(prayerTimes);
+        _currentCoordinates = coordinates;
+        _loadPrayerTimes();
+      });
+    } else {
+      print("Location permission denied.");
+    }
+  }
+
+  Future<void> _loadPrayerTimes() async {
+    final today = DateFormat('yyyy-MM-dd').format(DateTime.now());
+    final storedPrayerTimes = await dbHelper.getPrayerTimesByDate(today);
+
+    if (storedPrayerTimes != null) {
+      print("Fetched prayer times from database: $storedPrayerTimes");
+
+      double? latitude = storedPrayerTimes['latitude'];
+      double? longitude = storedPrayerTimes['longitude'];
+
+      if (latitude == null || longitude == null) {
+        print("Error: Latitude or Longitude is null.");
+        // Handle missing coordinates case here
+        // For example, set a default or prompt user to input coordinates
+        return;
+      }
+
+      var coordinates = Coordinates(latitude, longitude);
+      var dateComponents = DateComponents.from(DateTime.now());
+      final calculationParameters =
+          CalculationMethod.muslim_world_league.getParameters();
+      calculationParameters.madhab = Madhab.shafi;
+
+      setState(() {
+        prayerTimes =
+            PrayerTimes(coordinates, dateComponents, calculationParameters);
+        sunnahTimes = SunnahTimes(prayerTimes!);
+        currentTime = DateTime.now();
+      });
+    } else {
+      print("No prayer times found for today. Fetching new times.");
+
+      final fetchedPrayerTimes = PrayerTimes.today(
+        _currentCoordinates!,
+        CalculationMethod.karachi.getParameters(),
+      );
+
+      sunnahTimes = SunnahTimes(fetchedPrayerTimes);
+      await dbHelper.insertPrayerTimes({
+        'date': today,
+        'fajr': fetchedPrayerTimes.fajr.toIso8601String(),
+        'sunrise': fetchedPrayerTimes.sunrise.toIso8601String(),
+        'dhuhr': fetchedPrayerTimes.dhuhr.toIso8601String(),
+        'asr': fetchedPrayerTimes.asr.toIso8601String(),
+        'maghrib': fetchedPrayerTimes.maghrib.toIso8601String(),
+        'isha': fetchedPrayerTimes.isha.toIso8601String(),
+        'midnight': sunnahTimes.lastThirdOfTheNight.toIso8601String(),
+        'latitude': _currentCoordinates?.latitude ?? 0.0, // Default value
+        'longitude': _currentCoordinates?.longitude ?? 0.0, // Default value
+      });
+
+      setState(() {
+        prayerTimes = fetchedPrayerTimes;
+        currentTime = DateTime.now();
       });
     }
   }
 
   void _updatePrayerTimes() {
-    setState(() {
-      currentTime = DateTime.now();
-    });
-    print("""
-    All prayer times: 
-    Fajr: ${prayerTimes.fajr}
-    Sunrise: ${prayerTimes.sunrise}
-    Dhuhr: ${prayerTimes.dhuhr}
-    Asr: ${prayerTimes.asr}
-    Maghrib: ${prayerTimes.maghrib}
-    Isha: ${prayerTimes.isha}
-    Midnight: ${sunnahTimes.lastThirdOfTheNight}
-    """);
+    if (prayerTimes != null) {
+      setState(() {
+        currentTime = DateTime.now();
+      });
+      print("""
+      All prayer times: 
+      Fajr: ${prayerTimes!.fajr}
+      Sunrise: ${prayerTimes!.sunrise}
+      Dhuhr: ${prayerTimes!.dhuhr}
+      Asr: ${prayerTimes!.asr}
+      Maghrib: ${prayerTimes!.maghrib}
+      Isha: ${prayerTimes!.isha}
+      Midnight: ${sunnahTimes.lastThirdOfTheNight}
+      """);
+    } else {
+      print("Prayer times are not loaded.");
+    }
   }
 
   void _onItemTapped(int index) {
@@ -64,7 +146,15 @@ class _MainScreenState extends State<MainScreen> {
     });
   }
 
+  retrieveScheduledNotifications() async {
+    final AwesomeNotifications awesomeNotifications = AwesomeNotifications();
+    List<NotificationModel> activeNotifications =
+        await awesomeNotifications.listScheduledNotifications();
+    print('Scheduled Notifications: $activeNotifications');
+  }
+
   void _showAddTaskSheet() {
+    retrieveScheduledNotifications();
     showModalBottomSheet(
       context: context,
       builder: (context) {
@@ -74,27 +164,94 @@ class _MainScreenState extends State<MainScreen> {
               // Update tasks list or state
             });
           },
-          prayerTimes: prayerTimes,
+          prayerTimes: prayerTimes ??
+              PrayerTimes.today(
+                  _currentCoordinates!,
+                  CalculationMethod.karachi
+                      .getParameters()), // Handle null if needed
         );
       },
     );
   }
 
+  void _scheduleNotification(TaskHelper task) {
+    DateTime upcomingDateTime = task.getUpcomingDateTime(DateTime.now());
+
+    print(
+        "Scheduling notification for: $upcomingDateTime"); // Debug print to check scheduled time
+
+    AwesomeNotifications().createNotification(
+      content: NotificationContent(
+        id: task.id,
+        channelKey: 'basic_channel',
+        body: 'Reminder',
+        title: task.title,
+        autoDismissible: false,
+        displayOnForeground: true,
+        displayOnBackground: true,
+        wakeUpScreen: true,
+        fullScreenIntent: true,
+        payload: {
+          'associatedPrayer': task.associatedPrayer,
+          'daysOfWeek': task.daysOfWeek.join(','),
+        },
+      ),
+      schedule:
+          NotificationCalendar.fromDate(date: upcomingDateTime, repeats: true),
+    );
+  }
+
+  void _addTask(String title, DateTime time, String associatedPrayer) async {
+    final newId = (await _dbHelper.getMaxId() as int) + 1;
+
+    final newTask = TaskHelper(
+      newId,
+      title,
+      time,
+      associatedPrayer,
+      [], // Initialize with empty days, can be updated later
+    );
+
+    await _dbHelper.insertRecord(newTask.toMap());
+    _scheduleNotification(newTask);
+    _loadTasks(); // Refresh task list
+  }
+
+  void _loadTasks() async {
+    final records = await _dbHelper.queryDatabase();
+    print("Fetched records: $records"); // Debug print to check fetched records
+    final tasks = records.map((map) => TaskHelper.fromMap(map)).toList();
+    tasks.sort((a, b) {
+      DateTime now = DateTime.now();
+      DateTime aUpcoming = a.getUpcomingDateTime(now);
+      DateTime bUpcoming = b.getUpcomingDateTime(now);
+      return aUpcoming.compareTo(bUpcoming);
+    });
+    _tasksController.add(tasks);
+  }
+
   @override
   Widget build(BuildContext context) {
+    bool isFabVisible = true;
     return Scaffold(
       floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
       floatingActionButton: FloatingActionButton.large(
         shape: CircleBorder(),
         elevation: 0.3,
-        onPressed: _showAddTaskSheet,
-        child: Icon(Icons.add),
+        onPressed: () {
+          _showAddTaskSheet();
+        },
+        child: Icon(Pixel.plus),
       ),
       body: IndexedStack(
         index: _selectedIndex,
         children: <Widget>[
-          HomeScreen(),
-          TodoScreen(),
+          HomeScreen(
+            title: 'Spiritual Todo',
+          ),
+          TodoScreen(
+            title: 'Todo',
+          ),
         ],
       ),
       bottomNavigationBar: BottomNavigationBar(
@@ -106,12 +263,12 @@ class _MainScreenState extends State<MainScreen> {
         unselectedLabelStyle: GoogleFonts.pixelifySans(),
         items: const <BottomNavigationBarItem>[
           BottomNavigationBarItem(
-            icon: Icon(Icons.home_outlined),
+            icon: Icon(Pixel.home),
             activeIcon: Icon(Icons.home),
             label: ('Home'),
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.checklist_rounded),
+            icon: Icon(Pixel.checklist),
             activeIcon: Icon(Icons.checklist),
             label: ('Todo'),
           ),
