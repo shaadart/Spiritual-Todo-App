@@ -11,20 +11,21 @@ void main() {
   Workmanager().registerPeriodicTask(
     '1',
     'updatePrayerTimesTask',
-    frequency: Duration(days: 1),
+    frequency: Duration(minutes: 15),
   );
   AwesomeNotifications().initialize(
     null,
     [
       NotificationChannel(
         channelKey: 'basic_channel',
-        channelName: 'Basic notifications',
-        channelDescription: 'Notification channel for basic tests',
+        channelName: 'Todo Notifications',
+        channelDescription:
+            'Notification channel for daily or weekly todo notification',
         defaultColor: Color.fromARGB(255, 34, 0, 255),
         ledColor: Colors.white,
         enableVibration: true,
         playSound: true,
-        importance: NotificationImportance.High,
+         importance: NotificationImportance.High,
         defaultPrivacy: NotificationPrivacy.Public,
         channelShowBadge: true,
         enableLights: true,
@@ -46,9 +47,12 @@ class _MyAppState extends State<MyApp> {
     return MaterialApp(
       theme: ThemeData(
         brightness: Brightness.dark,
-        fontFamily: GoogleFonts.poppins().fontFamily,
-        // colorSchemeSeed: Color(0xff6BBF59),
-        colorSchemeSeed: Color.fromARGB(255, 86, 122, 255),
+        textTheme: GoogleFonts.poppinsTextTheme(TextTheme(
+          bodySmall:
+              TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+        )),
+        //   colorSchemeSeed: Color(0xff6BBF59),
+        colorSchemeSeed: Color(0xff164300),
         visualDensity: VisualDensity.adaptivePlatformDensity,
       ),
       home: MainScreen(),

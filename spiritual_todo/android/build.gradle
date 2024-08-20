@@ -6,7 +6,11 @@ allprojects {
 }
 
 buildscript {
-    ext.kotlin_version = '2.0.10'
+    ext.kotlin_version = '1.9.25'
+     dependencies {
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+        // other dependencies
+    }
      repositories {
         google()
         jcenter()

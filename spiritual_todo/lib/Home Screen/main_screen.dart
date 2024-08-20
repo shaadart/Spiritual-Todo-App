@@ -41,7 +41,7 @@ class _MainScreenState extends State<MainScreen> {
   @override
   void initState() {
     super.initState();
-    _loadTasks();
+    // _loadTasks();
     _initLocation();
   }
 
@@ -133,7 +133,7 @@ class _MainScreenState extends State<MainScreen> {
       Asr: ${prayerTimes!.asr}
       Maghrib: ${prayerTimes!.maghrib}
       Isha: ${prayerTimes!.isha}
-      Midnight: ${sunnahTimes.lastThirdOfTheNight}
+      Last Night: ${sunnahTimes.lastThirdOfTheNight}
       """);
     } else {
       print("Prayer times are not loaded.");
@@ -240,6 +240,8 @@ class _MainScreenState extends State<MainScreen> {
         elevation: 0.3,
         onPressed: () {
           _showAddTaskSheet();
+
+
         },
         child: Icon(Pixel.plus),
       ),

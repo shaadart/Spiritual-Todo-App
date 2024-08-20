@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:adhan/adhan.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:spiritual_todo/Models/prayer_model.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 
@@ -49,38 +50,51 @@ class DatabaseHelper {
     }
   }
 
-  Stream<List<Map<String, dynamic>>> get stream => _streamController.stream;
+  // Future<void> _notifyChange() async {
+  //   try {
+  //     final db = await database;
+  //     final records = await db.query(dbTable);
+  //     _streamController.add(records);
+  //   } catch (e) {
+  //     print('Error notifying change: $e');
+  //   }
+  // }
 
-  void _notifyChange() async {
-    try {
-      final db = await database;
-      final records = await db.query(dbTable);
-      _streamController.add(records);
-    } catch (e) {
-      print('Error notifying change: $e');
-    }
-  }
+  Stream<List<Map<String, dynamic>>> get stream => _streamController.stream;
 
   Future<void> _onCreate(Database db, int version) async {
     await db.execute('''
-      CREATE TABLE $dbTable (
-        $columnId INTEGER PRIMARY KEY AUTOINCREMENT,
-        $columnName TEXT NOT NULL,
-        $columnTime TEXT,
-        $columnAssociatedPrayer TEXT,
-        $columnDaysOfWeek TEXT
-      )
-    ''');
+        CREATE TABLE $dbTable (
+          $columnId INTEGER PRIMARY KEY AUTOINCREMENT,
+          $columnName TEXT NOT NULL,
+          $columnTime TEXT,
+          $columnAssociatedPrayer TEXT,
+          $columnDaysOfWeek TEXT
+        )
+      ''');
   }
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < newVersion) {
       if (oldVersion < 2) {
         await db.execute('''
-          ALTER TABLE $dbTable ADD COLUMN $columnDaysOfWeek TEXT
-        ''');
+            ALTER TABLE $dbTable ADD COLUMN $columnDaysOfWeek TEXT
+          ''');
       }
     }
+  }
+
+  Stream<List<TaskHelper>> getTasksStream() async* {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query('TaskTable');
+    final tasks = maps.map((map) => TaskHelper.fromMap(map)).toList();
+    tasks.sort((a, b) {
+      DateTime now = DateTime.now();
+      DateTime aUpcoming = a.getUpcomingDateTime(now);
+      DateTime bUpcoming = b.getUpcomingDateTime(now);
+      return aUpcoming.compareTo(bUpcoming);
+    });
+    yield tasks;
   }
 
   Future<void> deleteDatabase(String s) async {
@@ -92,7 +106,7 @@ class DatabaseHelper {
     final db = await database;
     int id = await db.insert(dbTable, row);
     print('Inserted record: $row with ID: $id');
-    _notifyChange();
+    // _notifyChange();
     return id;
   }
 
@@ -112,19 +126,17 @@ class DatabaseHelper {
   }
 
   Future<int> updateRecord(Map<String, dynamic> row) async {
+    print("Updating record with: $row"); // Debugging print
     final db = await database;
-    int id = row[columnId];
-    int result =
-        await db.update(dbTable, row, where: '$columnId = ?', whereArgs: [id]);
-    _notifyChange(); // Notify stream of changes
-    return result;
+    return await db.update(dbTable, row,
+        where: '$columnId = ?', whereArgs: [row[columnId]]);
   }
 
   Future<int> deleteRecord(int id) async {
     final db = await database;
     int result =
         await db.delete(dbTable, where: '$columnId = ?', whereArgs: [id]);
-    _notifyChange(); // Notify stream of changes
+    // _notifyChange(); // Notify stream of changes
     return result;
   }
 
@@ -212,28 +224,28 @@ class PrayerTimesDatabaseHelper {
   Future<void> _onCreate(Database db, int version) async {
     try {
       await db.execute('''
-        CREATE TABLE $dbTablePrayerTimes (
-          $columnId INTEGER PRIMARY KEY AUTOINCREMENT,
-          $columnDate TEXT NOT NULL,
-          $columnFajr TEXT,
-          $columnSunrise TEXT,
-          $columnDhuhr TEXT,
-          $columnAsr TEXT,
-          $columnMaghrib TEXT,
-          $columnIsha TEXT,
-          $columnMidnight TEXT,
-          $columnLatitude REAL,  -- Add new columns
-          $columnLongitude REAL  -- Add new columns
-        )
-      ''');
+          CREATE TABLE $dbTablePrayerTimes (
+            $columnId INTEGER PRIMARY KEY AUTOINCREMENT,
+            $columnDate TEXT NOT NULL,
+            $columnFajr TEXT,
+            $columnSunrise TEXT,
+            $columnDhuhr TEXT,
+            $columnAsr TEXT,
+            $columnMaghrib TEXT,
+            $columnIsha TEXT,
+            $columnMidnight TEXT,
+            $columnLatitude REAL,  -- Add new columns
+            $columnLongitude REAL  -- Add new columns
+          )
+        ''');
 
       await db.execute('''
-        CREATE TABLE $dbTableCoordinates (
-          $columnIdCoord INTEGER PRIMARY KEY AUTOINCREMENT,
-          $columnLatitudeCoord REAL NOT NULL,
-          $columnLongitudeCoord REAL NOT NULL
-        )
-      ''');
+          CREATE TABLE $dbTableCoordinates (
+            $columnIdCoord INTEGER PRIMARY KEY AUTOINCREMENT,
+            $columnLatitudeCoord REAL NOT NULL,
+            $columnLongitudeCoord REAL NOT NULL
+          )
+        ''');
       print('Database tables created successfully.');
     } catch (e) {
       print('Error creating database tables: $e');
@@ -244,13 +256,13 @@ class PrayerTimesDatabaseHelper {
     if (oldVersion < newVersion) {
       if (oldVersion < 3) {
         await db.execute('''
-          ALTER TABLE $dbTablePrayerTimes
-          ADD COLUMN $columnLatitude REAL
-        ''');
+            ALTER TABLE $dbTablePrayerTimes
+            ADD COLUMN $columnLatitude REAL
+          ''');
         await db.execute('''
-          ALTER TABLE $dbTablePrayerTimes
-          ADD COLUMN $columnLongitude REAL
-        ''');
+            ALTER TABLE $dbTablePrayerTimes
+            ADD COLUMN $columnLongitude REAL
+          ''');
       }
     }
   }

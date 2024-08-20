@@ -4,8 +4,12 @@ import 'package:awesome_notifications/awesome_notifications.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
+import 'package:pixelarticons/pixel.dart';
+import 'package:shimmer/shimmer.dart';
 import 'package:spiritual_todo/Service/db_helper.dart'; // Import your DB helper
-import '../Models/prayer_model.dart'; // Import your TaskHelper model
+import '../Models/prayer_model.dart';
+import '../Service/notification_service.dart';
+import 'add_todo.dart'; // Import your TaskHelper model
 
 class TodoScreen extends StatefulWidget {
   const TodoScreen({super.key, required this.title});
@@ -17,7 +21,8 @@ class TodoScreen extends StatefulWidget {
 }
 
 class _TodoScreenState extends State<TodoScreen> {
-  final _tasksController = StreamController<List<TaskHelper>>.broadcast();
+  int? _expandedTaskId; // Track the ID of the currently expanded task
+  // final _tasksController = StreamController<List<TaskHelper>>.broadcast();
   final DatabaseHelper _dbHelper = DatabaseHelper(
     dbName: "userDatabase.db",
     dbVersion: 3,
@@ -36,12 +41,12 @@ class _TodoScreenState extends State<TodoScreen> {
   void initState() {
     super.initState();
 
-    _loadTasks();
+    // _loadTasks();
   }
 
   @override
   void dispose() {
-    _tasksController.close();
+    _dbHelper.dispose(); // Dispose the database helper to close the stream
     super.dispose();
   }
 
@@ -59,67 +64,42 @@ class _TodoScreenState extends State<TodoScreen> {
       DateTime bUpcoming = b.getUpcomingDateTime(now);
       return aUpcoming.compareTo(bUpcoming);
     });
-    _tasksController.add(tasks);
-  }
-
-  void _scheduleNotification(TaskHelper task) {
-    DateTime upcomingDateTime = task.getUpcomingDateTime(DateTime.now());
-
-    print(
-        "Scheduling notification for: $upcomingDateTime"); // Debug print to check scheduled time
-
-    AwesomeNotifications().createNotification(
-      content: NotificationContent(
-        id: task.id,
-        channelKey: 'basic_channel',
-        body: 'Reminder',
-        title: task.title,
-        autoDismissible: false,
-        displayOnForeground: true,
-        displayOnBackground: true,
-        wakeUpScreen: true,
-        fullScreenIntent: true,
-        payload: {
-          'associatedPrayer': task.associatedPrayer,
-          'daysOfWeek': task.daysOfWeek.join(','),
-        },
-      ),
-      schedule:
-          NotificationCalendar.fromDate(date: upcomingDateTime, repeats: true),
-    );
+    // _tasksController.add(tasks);
   }
 
   Future<void> _updateTask(TaskHelper task) async {
     await _dbHelper.updateRecord(task.toMap());
-
-    // Cancel existing notification
     AwesomeNotifications().cancel(task.id);
-
-    // Schedule new notification
-    _scheduleNotification(task);
+    scheduleNotification(task);
   }
-
 
   Future<void> _deleteTask(int id) async {
     final deletedTaskMap =
         await _dbHelper.getTask(id); // Get the task to delete
     if (deletedTaskMap != null) {
       final deletedTask = TaskHelper.fromMap(deletedTaskMap);
-      await _dbHelper.deleteRecord(id);
-      AwesomeNotifications().cancel(id); // Cancel the notification
-      setState(() {
-        _deletedTasks.add(deletedTask); // Add to deleted tasks list
-        _expandedTasks.remove(id); // Remove from expanded tasks when deleted
+      // Cancel the delayed deletion if undo is pressed
+      Future.delayed(Duration(milliseconds: 1), () async {
+        if (!_deletedTasks.contains(deletedTask)) {
+          await _dbHelper.deleteRecord(id);
+          AwesomeNotifications().cancel(id); // Cancel the notification
+          setState(() {
+            _deletedTasks.add(deletedTask); // Add to deleted tasks list
+            _expandedTasks
+                .remove(id); // Remove from expanded tasks when deleted
+          });
+        }
       });
     }
   }
 
   void _toggleExpansion(int taskId) {
     setState(() {
-      if (_expandedTasks.contains(taskId)) {
-        _expandedTasks.remove(taskId);
+      if (_expandedTaskId == taskId) {
+        _expandedTaskId = null; // Collapse the currently expanded task
       } else {
-        _expandedTasks.add(taskId);
+        _expandedTaskId =
+            taskId; // Expand the new task and collapse the previous one
       }
     });
   }
@@ -129,68 +109,103 @@ class _TodoScreenState extends State<TodoScreen> {
       _deletedTasks.remove(deletedTask); // Remove from deleted tasks list
       _dbHelper
           .insertRecord(deletedTask.toMap()); // Re-insert task into database
-      _loadTasks(); // Reload tasks to refresh UI
+      // _loadTasks(); // Reload tasks to refresh UI
     });
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      
-        appBar: AppBar(
-          centerTitle: true,
-          title: Text(
-            'Todo',
-            style: GoogleFonts.pixelifySans(
-              fontWeight: FontWeight.bold,
-              color: Theme.of(context).colorScheme.secondary,
-            ),
+      appBar: AppBar(
+        centerTitle: true,
+        title: Text(
+          widget.title,
+          style: GoogleFonts.pixelifySans(
+            fontWeight: FontWeight.bold,
+            color: Theme.of(context).colorScheme.secondary,
           ),
         ),
-        body: StreamBuilder<List<TaskHelper>>(
-  stream: _tasksController.stream,
-  builder: (context, snapshot) {
-    if (snapshot.connectionState == ConnectionState.waiting) {
-      return Center(child: CircularProgressIndicator());
-    } else if (snapshot.hasError) {
-      return Center(child: Text('Error: ${snapshot.error}'));
-    } else if (!snapshot.hasData || snapshot.data!.isEmpty) {
-      return Center(child: Text('No tasks found'));
-    } else {
-      final todos = snapshot.data!;
-      return ListView.builder(
-        itemCount: todos.length,
-        itemBuilder: (context, index) {
-          final task = todos[index];
-          return TaskItem(
-            key: ValueKey(task.id),
-            task: task,
-            onUpdate: (updatedTask) {
-              _updateTask(updatedTask);
-            },
-            onDelete: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text('${task.title} is deleted'),
-                  action: SnackBarAction(
-                    label: 'Undo',
-                    onPressed: () {
-                      _undoDelete(task);
-                    },
-                  ),
+      ),
+      body: FutureBuilder(
+        future: _dbHelper.queryDatabase(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return Center(child: CircularProgressIndicator());
+          } else if (snapshot.hasError) {
+            return Center(child: Text('Error: ${snapshot.error}'));
+          } else if (!snapshot.hasData || snapshot.data!.isEmpty) {
+            return GestureDetector(
+              onTap: () {
+                // Add functionality to add a new todo if necessary
+              },
+              child: Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Shimmer.fromColors(
+                      period: Duration(milliseconds: 3000),
+                      baseColor: Theme.of(context)
+                          .colorScheme
+                          .onSurface
+                          .withOpacity(0.55),
+                      highlightColor:
+                          Theme.of(context).colorScheme.primaryFixed,
+                      child: Icon(Pixel.check, size: 89),
+                    ),
+                    Text('Tap to add todo'),
+                  ],
                 ),
-              );
-              _deleteTask(task.id);
-            },
-            onCollapse: () {
-              _toggleExpansion(task.id);
-            },
-          );
+              ),
+            );
+          } else {
+            // Convert snapshot data to a list of tasks
+            final tasks =
+                snapshot.data!.map((map) => TaskHelper.fromMap(map)).toList();
+
+            // Get the current time for comparison
+            DateTime now = DateTime.now();
+
+            // Sort tasks by their upcoming date and time
+            tasks.sort((a, b) {
+              DateTime aUpcoming = a.getUpcomingDateTime(now);
+              DateTime bUpcoming = b.getUpcomingDateTime(now);
+              return aUpcoming.compareTo(bUpcoming);
+            });
+
+            return ListView.builder(
+              itemCount: tasks.length,
+              itemBuilder: (context, index) {
+                TaskHelper task = tasks[index];
+                return TaskItem(
+                  key: ValueKey(task.id),
+                  task: task,
+                  onUpdate: (updatedTask) {
+                    _updateTask(updatedTask);
+                  },
+                  onDelete: () {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        duration: Duration(milliseconds: 1500),
+                        content: Text('${task.title} is deleted'),
+                        action: SnackBarAction(
+                          label: 'Undo',
+                          onPressed: () {
+                            _undoDelete(task);
+                          },
+                        ),
+                      ),
+                    );
+                    _deleteTask(task.id);
+                  },
+                  onCollapse: () {
+                    _toggleExpansion(task.id);
+                  },
+                );
+              },
+            );
+          }
         },
-      );
-    }
-  },
-),
+      ),
     );
   }
 }
@@ -281,28 +296,32 @@ class _TaskItemState extends State<TaskItem> {
         .where((day) => daysOfWeek.contains(day.toUpperCase()))
         .toList();
     return orderedDays.isEmpty
-        ? 'No days selected'
+        ? 'Once'
         : orderedDays.length == 7
             ? 'Everyday'
             : orderedDays.join(', ').toLowerCase();
   }
 
-  Future<void> _selectTime(BuildContext context) async {
-    final TimeOfDay? picked = await showTimePicker(
-      context: context,
-      initialTime: _selectedTime,
-    );
-    if (picked != null && picked != _selectedTime) {
-      setState(() {
-        _selectedTime = picked;
-        _needsUpdate = true; // Flag that an update is needed
-      });
-    }
-  }
+  // Future<void> _selectTime(BuildContext context) async {
+  //   final TimeOfDay? picked = await showTimePicker(
+  //     context: context,
+  //     initialTime: _selectedTime,
+  //   );
+  //   if (picked != null && picked != _selectedTime) {
+  //     setState(() {
+  //       _selectedTime = picked;
+  //       _needsUpdate = true; // Flag that an update is needed
+  //     });
+  //   }
+  // }
 
   void _applyUpdates() {
     widget.task.daysOfWeek = _selectedDays.toList();
     widget.task.title = _titleController.text;
+    widget.task.associatedPrayer = PrayerUtils.getAssociatedPrayer(
+        widget.task.time, prayerTimes, sunnahTimes);
+
+        //How to check in that selectTime is not changed, then don't update the time
     widget.task.time = DateTime(
       DateTime.now().year,
       DateTime.now().month,
@@ -310,6 +329,8 @@ class _TaskItemState extends State<TaskItem> {
       _selectedTime.hour,
       _selectedTime.minute,
     );
+    print("Updated time: ${widget.task.time}"); // Debugging print
+    print("Applying updates: ${widget.task.toMap()}"); // Debug print
 
     widget.onUpdate(widget.task);
     setState(() {
@@ -334,12 +355,14 @@ class _TaskItemState extends State<TaskItem> {
         },
         backgroundColor:
             Theme.of(context).colorScheme.onSecondary.withOpacity(0.34),
-        leading: Icon(Icons.circle_outlined),
+
         title: Opacity(
           opacity: _isExpanded ? 0.34 : 0.89,
           child: Text(
             widget.task.title,
-            style: TextStyle(fontWeight: FontWeight.bold),
+            style: TextStyle(
+                fontWeight: FontWeight.bold,
+                color: Theme.of(context).colorScheme.onSurface),
           ),
         ),
         subtitle: Opacity(
@@ -434,7 +457,17 @@ class _TaskItemState extends State<TaskItem> {
                     _selectedTime.minute,
                   ))}'),
                   leading: Icon(Icons.access_time_outlined),
-                  onTap: () => _selectTime(context),
+                  onTap: () async {
+                     final time = await showTimePicker(
+                      context: context,
+                      initialTime: _selectedTime,
+                    );
+                    if (time != null) {
+                      setState(() {
+                        _selectedTime = time;
+                      });
+                    }
+                  },
                 ),
                 ListTile(
                   title: Text(_isNotificationEnabled

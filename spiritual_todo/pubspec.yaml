@@ -40,7 +40,9 @@ dependencies:
   geolocator:
   permission_handler:
   awesome_notifications:
-  workmanager: 
+  workmanager: ^0.5.2
+  page_transition:
+  expansion_tile_card:
 
 
   # The following adds the Cupertino Icons font to your application.
@@ -50,8 +52,15 @@ dependencies:
   sqflite: ^2.3.3+1
 
 dev_dependencies:
+  flutter_launcher_icons:
   flutter_test:
     sdk: flutter
+
+# flutter_icons:
+#   android: true
+#   ios: true
+#   image_path: "assets/icon.png"
+
 
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is

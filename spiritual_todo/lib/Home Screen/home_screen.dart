@@ -3,15 +3,16 @@ import 'package:adhan/adhan.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
+import 'package:page_transition/page_transition.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:spiritual_todo/Models/prayer_model.dart';
 import 'package:spiritual_todo/Todo/premium_page.dart';
 import 'package:staggered_grid_view_flutter/widgets/staggered_grid_view.dart';
 import 'package:staggered_grid_view_flutter/widgets/staggered_tile.dart';
-
-import '../Models/prayer_model.dart';
 import '../Service/db_helper.dart';
-import '../Todo/add_todo.dart';
+
 import '../Todo/prayer_details.dart';
+import '../settings/setting_page.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key, required this.title});
@@ -28,7 +29,6 @@ class _HomeScreenState extends State<HomeScreen> {
   SunnahTimes? sunnahTimes;
   late DateTime currentTime;
   final PrayerTimesDatabaseHelper prayerDbHelper = PrayerTimesDatabaseHelper();
-
   final DatabaseHelper dbHelper = DatabaseHelper(
     dbName: "userDatabase.db",
     dbVersion: 3,
@@ -39,78 +39,41 @@ class _HomeScreenState extends State<HomeScreen> {
     columnAssociatedPrayer: 'associatedPrayer',
     columnDaysOfWeek: 'daysOfWeek',
   );
-
-  void _showPrayerDetailsDialog(PrayerTime prayer) async {
-    final records = await dbHelper.queryDatabase();
-    final allTasks = records.map((map) => TaskHelper.fromMap(map)).toList();
-
-    final tasksForPrayer = allTasks
-        .where((task) =>
-            task.associatedPrayer.replaceAll("'", "").toLowerCase() ==
-            prayer.label.replaceAll("'", "").toLowerCase())
-        .toList();
-
-    showDialog(
-      context: context,
-      builder: (context) {
-        return Dialog(
-          insetPadding: EdgeInsets.zero,
-          child: PrayerDetailsScreen(
-            prayer: prayer,
-            tasks: tasksForPrayer,
-          ),
+  Future<void> _initializeCoordinates() async {
+    final permissionStatus = await Permission.location.request();
+    if (permissionStatus.isGranted) {
+      try {
+        Position position = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high,
         );
-      },
-    );
-  }
+        setState(() {
+          _currentCoordinates = Coordinates(position.latitude, position.longitude);
+        });
+        await _fetchPrayerTimes(); // Ensure this completes
+      } catch (e) {
+        print('Error fetching coordinates: $e');
+      }
+    } else {
+      print('Location permission denied.');
 
-  void _showPremiumPageDialog() async {
-    showDialog(
-      context: context,
-      builder: (context) {
-        return Dialog(
-          insetPadding: EdgeInsets.zero,
-          child: PremiumPage(),
-        );
-      },
-    );
-  }
-
-Future<void> _initializeCoordinates() async {
-  // Request location permissions
-  final permissionStatus = await Permission.location.request();
-
-  if (permissionStatus.isGranted) {
-    try {
-      // Fetch current position
-      Position position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-      );
-
-      setState(() {
-        _currentCoordinates = Coordinates(position.latitude, position.longitude);
-      });
-
-      // Fetch prayer times
-      await _fetchPrayerTimes();
-    } catch (e) {
-      print('Error fetching coordinates: $e');
     }
-  } else {
-    print('Location permission denied.');
   }
-}
-@override
-void initState() {
-  super.initState();
-  _initializeCoordinates();
-}
-  Future<void> _fetchPrayerTimes() async {
+  PrayerTime? _closestPrayerTime;
 
+  @override
+  void initState() {
+    super.initState();
+    _initializeCoordinates();
+  }
+
+  Future<void> _fetchPrayerTimes() async {
     if (_currentCoordinates == null) {
       print('Error: Current coordinates are not set.');
+      _initializeCoordinates();
+
       return;
     }
+
     print("Fetching prayer times...");
 
     final today = DateFormat('yyyy-MM-dd').format(DateTime.now());
@@ -122,17 +85,11 @@ void initState() {
 
       if (latitude == null || longitude == null) {
         print("Error: Latitude or Longitude is null.");
+        _initializeCoordinates();
         return;
       }
 
-      // Update _currentCoordinates
       _currentCoordinates = Coordinates(latitude, longitude);
-      print(
-          'Updated Coordinates: Latitude=${_currentCoordinates?.latitude}, Longitude=${_currentCoordinates?.longitude}');
-
-      // Debug: Verify coordinates immediately after setting
-      print(
-          'Coordinates immediately after setting: Latitude=${_currentCoordinates?.latitude}, Longitude=${_currentCoordinates?.longitude}');
 
       var dateComponents = DateComponents.from(DateTime.now());
       final calculationParameters =
@@ -144,12 +101,16 @@ void initState() {
             _currentCoordinates!, dateComponents, calculationParameters);
         sunnahTimes = SunnahTimes(prayerTimes!);
         currentTime = DateTime.now();
+
+        // currentTime = DateTime(DateTime.now().year, DateTime.now().month,
+        //     DateTime.now().day, 4, 17);
       });
     } else {
       print("No prayer times found for today. Fetching new times.");
 
       if (_currentCoordinates == null) {
         print('Error: Current coordinates are not set.');
+        _initializeCoordinates();
         return;
       }
 
@@ -174,58 +135,140 @@ void initState() {
 
       setState(() {
         prayerTimes = fetchedPrayerTimes;
-        currentTime = DateTime.now();
+        currentTime = DateTime(
+          DateTime.now().year,
+          DateTime.now().month,
+          DateTime.now().day,
+          DateTime.now().hour,
+          DateTime.now().minute,
+        );
       });
     }
+
+    // Set the closest prayer time
+    setState(() {
+      _closestPrayerTime = _findAssociatedPrayerTime();
+    });
   }
 
-  void _updatePrayerTimes() {
-    if (_currentCoordinates == null) {
-      print('Error: Current coordinates are not set.');
-      return;
-    }
+  PrayerTime? _findAssociatedPrayerTime() {
+    if (prayerTimes == null || sunnahTimes == null) return null;
 
-    final params = CalculationMethod.karachi.getParameters();
-    params.madhab = Madhab.hanafi;
+    final associatedPrayerLabel = PrayerUtils.getAssociatedPrayer(
+      DateTime.now(),
+      prayerTimes!,
+      sunnahTimes!,
+    );
 
-    try {
-      setState(() {
-        prayerTimes = PrayerTimes.today(_currentCoordinates!, params);
-        sunnahTimes = SunnahTimes(prayerTimes!);
-        currentTime = DateTime.now();
-      });
+    final List<PrayerTime> prayerTimesList = [
+      PrayerTime('Fajr', prayerTimes!.fajr),
+      PrayerTime('Sunrise', prayerTimes!.sunrise),
+      PrayerTime('Dhuhr', prayerTimes!.dhuhr),
+      PrayerTime('Asr', prayerTimes!.asr),
+      PrayerTime('Maghrib', prayerTimes!.maghrib),
+      PrayerTime('Isha', prayerTimes!.isha),
+      PrayerTime('Last Night', sunnahTimes!.lastThirdOfTheNight),
+    ];
 
-      print("""
-      All prayer times: 
-      Fajr: ${prayerTimes!.fajr}
-      Sunrise: ${prayerTimes!.sunrise}
-      Dhuhr: ${prayerTimes!.dhuhr}
-      Asr: ${prayerTimes!.asr}
-      Maghrib: ${prayerTimes!.maghrib}
-      Isha: ${prayerTimes!.isha}
-      Midnight: ${sunnahTimes!.lastThirdOfTheNight}
-      """);
-    } catch (e) {
-      print('Error updating prayer times: $e');
-    }
+    return prayerTimesList.firstWhere(
+      (prayer) => prayer.label == associatedPrayerLabel,
+      orElse: () => PrayerTime('None', DateTime.now()), // Fallback
+    );
   }
 
-  Future<int> _getTaskCountForPrayer(String prayerLabel) async {
-    return await dbHelper.countTasksForPrayer(prayerLabel);
+  void _showPrayerDetailsDialog(PrayerTime prayer) async {
+    // Fetch all tasks from the database
+    final records = await dbHelper.queryDatabase();
+    final allTasks = records.map((map) => TaskHelper.fromMap(map)).toList();
+
+    // Filter tasks associated with the selected prayer
+    final tasksForPrayer = allTasks
+        .where((task) =>
+            task.associatedPrayer.replaceAll("'", "").toLowerCase() ==
+            prayer.label.replaceAll("'", "").toLowerCase())
+        .toList();
+
+    // Show the dialog with filtered tasks
+    showDialog(
+      context: context,
+      builder: (context) {
+        return Dialog(
+          insetPadding: EdgeInsets.zero,
+          child: PrayerDetailsScreen(
+            prayer: prayer,
+            tasks: tasksForPrayer,
+          ),
+        );
+      },
+    );
+  }
+
+  void _showPremiumPageDialog() async {
+    showDialog(
+      context: context,
+      builder: (context) {
+        
+        return Dialog(
+          insetAnimationCurve: Curves.linear,
+          insetAnimationDuration: Duration(milliseconds: 1000),
+          insetPadding: EdgeInsets.zero,
+          child: PremiumPage(),
+        );
+      },
+    );
+  }
+
+  List<T> rotateList<T>(List<T> list, int index) {
+    if (list.isEmpty) return list;
+
+    int n = list.length;
+    index = index % n;
+
+    return [...list.sublist(index), ...list.sublist(0, index)];
+  }
+
+  List<PrayerTime> rotateListBasedOnCurrentTime(
+      List<PrayerTime> list, DateTime currentTime) {
+    if (list.isEmpty) return list;
+
+    // Find the index of the prayer time that matches the current time
+
+// Find the index of the prayer time that matches or is closest to the current time
+    int index = list.indexWhere((prayer) =>
+        prayer.time.isBefore(currentTime) &&
+        (prayer.time.add(Duration(minutes: 1)).isAfter(currentTime) ||
+            prayer.time == currentTime));
+
+// If no prayer time matches or is closest, start from the beginning
+    if (index == -1) {
+      // Find the closest prayer time to the current time
+      index = list.indexWhere((prayer) => prayer.time.isAfter(currentTime));
+
+      // If no future prayer time is found, fallback to the last prayer time
+      if (index == -1) index = list.length - 1;
+    }
+
+// In case the index is still -1, ensure it defaults to 0
+    if (index < 0) index = 0;
+
+// Output the result for debugging
+    print('Index: $index');
+
+    print('Current Time: ${DateFormat.jm().format(currentTime)}');
+    print('Rotating from index: $index');
+
+    return rotateList(list, index - 1);
   }
 
   @override
   Widget build(BuildContext context) {
-    print(
-        'Current Coordinates: Latitude=${_currentCoordinates?.latitude}, Longitude=${_currentCoordinates?.longitude}');
-
     if (_currentCoordinates == null) {
-      // Handle the case where coordinates are not set
+      _initializeCoordinates();
+
       return Center(child: Text('Error: Current coordinates are not set.'));
     }
 
     if (prayerTimes == null || sunnahTimes == null) {
-      // Show a loading spinner or an error message
       return Center(child: CircularProgressIndicator());
     }
 
@@ -236,73 +279,50 @@ void initState() {
       PrayerTime('Asr', prayerTimes!.asr),
       PrayerTime('Maghrib', prayerTimes!.maghrib),
       PrayerTime('Isha', prayerTimes!.isha),
-      PrayerTime('Midnight', sunnahTimes!.lastThirdOfTheNight),
+      PrayerTime('Last Night', sunnahTimes!.lastThirdOfTheNight),
     ];
 
-    // Sort prayers based on their proximity to the current time
-    prayerTimesList.sort((a, b) {
-      final diffA = (a.time.isBefore(currentTime))
-          ? currentTime.difference(a.time).inMinutes
-          : a.time.difference(currentTime).inMinutes;
-      final diffB = (b.time.isBefore(currentTime))
-          ? currentTime.difference(b.time).inMinutes
-          : b.time.difference(currentTime).inMinutes;
-      return diffA.compareTo(diffB);
+    final rotatedPrayers =
+        rotateListBasedOnCurrentTime(prayerTimesList, currentTime);
+    print('Closest Prayer Time: ${_closestPrayerTime?.label}');
+// Debug print statements
+    rotatedPrayers.forEach((prayer) {
+      print('${prayer.label}: ${DateFormat.jm().format(prayer.time)}');
     });
-
-    // Get the 6 most recent prayers
-    final recentPrayers = prayerTimesList.take(7).toList();
-
-    // Determine the size based on chronological order
-    // Adjust the prayer sizes
-    final Map<String, double> prayerSizes = {
-      'Isha': 1.6,
-      'Midnight': 1.8,
-      'Fajr': 1.4,
-      'Sunrise': 1.2,
-      'Dhuhr': 1.0,
-      'Asr': 0.8,
-      'Maghrib': 0.6,
-    };
-
-    // Reorder sizes based on the current prayer
-    final currentPrayer = recentPrayers.first.label;
-    final orderedPrayers = [
-      'Isha',
-      'Midnight',
-      'Fajr',
-      'Sunrise',
-      'Dhuhr',
-      'Asr',
-      'Maghrib'
-    ];
-
-    final sortedPrayerSizes = Map.fromEntries(
-      orderedPrayers.asMap().entries.map((entry) {
-        final index = (orderedPrayers.indexOf(currentPrayer) + entry.key) %
-            orderedPrayers.length;
-        return MapEntry(orderedPrayers[index],
-            prayerSizes[orderedPrayers[entry.key]] ?? 1.0);
-      }),
-    );
+    final sizes = List<double>.generate(
+        rotatedPrayers.length,
+        (index) =>
+            (rotatedPrayers.length - index - 0.4) / rotatedPrayers.length +
+            0.2);
 
     return Scaffold(
       resizeToAvoidBottomInset: true,
       appBar: AppBar(
         actions: [
           OutlinedButton.icon(
-              onPressed: () {
-                _showPremiumPageDialog();
-              },
-              label: Text("Premium"),
-              icon: Icon(Icons.star)),
+            onPressed: () {
+              _showPremiumPageDialog();
+            },
+            label: Text("Premium"),
+            icon: Icon(Icons.star),
+          ),
           Text("\t\t"),
         ],
         leading: Padding(
           padding: const EdgeInsets.all(8.0),
-          child: CircleAvatar(
-            backgroundImage: NetworkImage(
-                'https://avatars.githubusercontent.com/u/47231161?v=4'),
+          child: InkWell(
+            onTap: () {
+              Navigator.push(
+                  context,
+                  PageTransition(
+                    type: PageTransitionType.leftToRight,
+                    child: SettingsPage(),
+                  ));
+            },
+            child: CircleAvatar(
+              backgroundImage: NetworkImage(
+                  'https://avatars.githubusercontent.com/u/47231161?v=4'),
+            ),
           ),
         ),
         title: Row(
@@ -314,102 +334,61 @@ void initState() {
                 color: Theme.of(context).colorScheme.secondary,
               ),
             ),
-            // Text(
-            //   " premium",
-            //   style: GoogleFonts.pixelifySans(
-            //     fontSize: 13,
-            //     fontStyle: FontStyle.italic,
-            //     color: Theme.of(context).colorScheme.secondary,
-            //   ),
-            // ),
           ],
         ),
       ),
       body: SingleChildScrollView(
         child: Padding(
           padding: EdgeInsets.all(16.0),
-          child: FutureBuilder(
-            future: Future.wait(recentPrayers
-                .map((prayer) => _getTaskCountForPrayer(prayer.label))
-                .toList()),
-            builder: (context, AsyncSnapshot<List<int>> snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting) {
-                return Center(child: CircularProgressIndicator());
-              }
-
-              if (snapshot.hasError) {
-                return Center(child: Text('Error: ${snapshot.error}'));
-              }
-
-              final taskCounts =
-                  snapshot.data ?? List.filled(recentPrayers.length, 0);
-
-              return StaggeredGridView.countBuilder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                crossAxisCount: 2,
-                itemCount: recentPrayers.length,
-                itemBuilder: (context, index) {
-                  final prayer = recentPrayers[index];
-                  // final isActive = prayer.time.isBefore(currentTime) &&
-                  //     prayer.time
-                  //         .add(Duration(minutes: 30))
-                  //         .isAfter(currentTime);
-
-                  final taskCount = taskCounts[index];
-
-                  return GestureDetector(
-                    onTap: () => _showPrayerDetailsDialog(prayer),
-                    child: Card(
-                      color: Theme.of(context).colorScheme.surfaceContainer,
-                      elevation: 0,
-                      child: ListTile(
-                        title: Text(
-                          prayer.label,
-                          style: TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.bold,
-                            color: Theme.of(context).colorScheme.secondary,
-                          ),
-                        ),
-                        trailing: Text(
-                          DateFormat.jm().format(prayer.time),
-                          style: GoogleFonts.lato(
-                            fontStyle: FontStyle.italic,
-                            fontSize: 12,
-                          ),
-                        ),
-                        subtitle: Row(
-                          children: [
-                            // Icon(Icons.check, size: 16),
-                            // SizedBox(width: 4),
-                            Text(
-                              '${taskCount} tasks',
-                              style: TextStyle(
-                                fontSize: 10,
-                              ),
-                            ),
-                          ],
-                        ),
+          child: StaggeredGridView.countBuilder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            crossAxisCount: 2,
+            itemCount: rotatedPrayers.length,
+            itemBuilder: (context, index) {
+              final prayer = rotatedPrayers[index];
+              final isMainTile = prayer == _closestPrayerTime;
+              return GestureDetector(
+                onTap: () {
+                  _showPrayerDetailsDialog(prayer);
+                },
+                child: Card(
+                  color: Theme.of(context).colorScheme.surfaceContainer,
+                  elevation: isMainTile ? 4 : 0,
+                  child: ListTile(
+                    title: Text(
+                      prayer.label,
+                      style: TextStyle(
+                        fontSize: isMainTile ? 20 : 15,
+                        fontWeight: FontWeight.bold,
+                        color: Theme.of(context).colorScheme.secondary,
                       ),
                     ),
-                  );
-                },
-                staggeredTileBuilder: (index) {
-                  final prayer = recentPrayers[index];
-                  final size = sortedPrayerSizes[prayer.label] ?? 1.0;
-
-                  if (index == 0) {
-                    return StaggeredTile.count(
-                        2, 2); // Full width for the 0th index
-                  } else {
-                    return StaggeredTile.count(1, size);
-                  }
-                },
-                mainAxisSpacing: 8.0,
-                crossAxisSpacing: 8.0,
+                    trailing: Text(
+                      DateFormat.jm().format(prayer.time),
+                      style: GoogleFonts.lato(
+                        fontStyle: FontStyle.italic,
+                        fontSize: isMainTile ? 16 : 12,
+                      ),
+                    ),
+                  ),
+                ),
               );
             },
+            staggeredTileBuilder: (index) {
+              if (index == 0) {
+                return StaggeredTile.count(
+                    2, 2); // Full width for the first tile
+              }
+              final size = sizes[index] * 2;
+              if (rotatedPrayers[index] == _closestPrayerTime) {
+                return StaggeredTile.count(
+                    2, size); // Larger tile for closest prayer
+              }
+              return StaggeredTile.count(1, size);
+            },
+            mainAxisSpacing: 8.0,
+            crossAxisSpacing: 8.0,
           ),
         ),
       ),

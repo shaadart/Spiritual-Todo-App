@@ -6,11 +6,10 @@ import 'package:intl/intl.dart';
 class PrayerTime {
   final String label;
   final DateTime time;
+  final int? timeDifference;
 
-  PrayerTime(this.label, this.time);
+  PrayerTime(this.label, this.time, {this.timeDifference});
 }
-
-
 
 class TaskHelper {
   final int id;
@@ -28,32 +27,31 @@ class TaskHelper {
       map['task'],
       _parseTime(map['time']),
       map['associatedPrayer'] ?? '',
-      (map['daysOfWeek'] as String).split(','),
+      (map['daysOfWeek'] as String).split(',')
+        ..removeWhere((day) => day.isEmpty),
     );
   }
 
-  DateTime getUpcomingDateTime(DateTime currentTime) {
-    DateTime taskDateTime = DateTime(
-      currentTime.year,
-      currentTime.month,
-      currentTime.day,
-      time.hour,
-      time.minute,
-    );
+DateTime getUpcomingDateTime(DateTime now) {
+  DateTime taskDateTime = DateTime(
+    now.year,
+    now.month,
+    now.day,
+    time.hour,
+    time.minute,
+  );
 
-    if (currentTime.isAfter(taskDateTime)) {
+  // If task time is in the past, move to the next available day
+  if (taskDateTime.isBefore(now)) {
+    do {
       taskDateTime = taskDateTime.add(Duration(days: 1));
-    }
-
-    // Adjust taskDateTime to the next valid day
-    while (!daysOfWeek.contains(_getDayString(taskDateTime.weekday))) {
-      taskDateTime = taskDateTime.add(Duration(days: 1));
-    }
-
-    return taskDateTime;
+    } while (!daysOfWeek.contains(_getDayString(taskDateTime.weekday)));
   }
 
-  // Helper method to get day string from weekday number
+  return taskDateTime;
+}
+
+
   String _getDayString(int weekday) {
     switch (weekday) {
       case DateTime.monday:
@@ -71,7 +69,7 @@ class TaskHelper {
       case DateTime.sunday:
         return 'SUN';
       default:
-        return '';
+        return 'Once';
     }
   }
 
@@ -81,24 +79,18 @@ class TaskHelper {
       'task': title,
       'time': _formatTime(time),
       'associatedPrayer': associatedPrayer,
-      'daysOfWeek': daysOfWeek.join(','),
+      'daysOfWeek': daysOfWeek.isEmpty ? 'Once' : daysOfWeek.join(','),
     };
   }
 
-  static DateTime _parseTime(String timeString) {
-    try {
-      // print('Parsing time string: $timeString');
-      // Trim whitespace before parsing
-      return DateFormat('hh:mm a').parse(timeString.trim());
-    } catch (e) {
-      // print('Error parsing time string: $timeString');
-      // print('Exception: $e');
-      // Handle the error as needed
-      return DateTime.now(); // Default return value on error
-    }
+static DateTime _parseTime(String timeString) {
+  try {
+    return DateFormat('hh:mm a').parse(timeString.trim());
+  } catch (e) {
+    return DateTime.now();
   }
-
-  static String _formatTime(DateTime dateTime) {
+}
+   String _formatTime(DateTime dateTime) {
     return '${dateTime.hour}:${dateTime.minute.toString().padLeft(2, '0')}';
   }
 }
@@ -108,60 +100,53 @@ class PrayerUtils {
       DateTime taskTime, PrayerTimes prayerTimes, SunnahTimes sunnahTimes) {
     DateTime taskDate = DateTime(taskTime.year, taskTime.month, taskTime.day);
 
-    // Define prayer times
-    DateTime fajrEnd = DateTime(taskDate.year, taskDate.month, taskDate.day,
-        prayerTimes.sunrise.hour, prayerTimes.sunrise.minute);
-    DateTime sunriseEnd = DateTime(taskDate.year, taskDate.month, taskDate.day,
+    // Define prayer times for the day
+    DateTime fajrStart = DateTime(taskDate.year, taskDate.month, taskDate.day,
+        prayerTimes.fajr.hour, prayerTimes.fajr.minute);
+    DateTime sunriseStart = DateTime(taskDate.year, taskDate.month,
+        taskDate.day, prayerTimes.sunrise.hour, prayerTimes.sunrise.minute);
+    DateTime dhuhrStart = DateTime(taskDate.year, taskDate.month, taskDate.day,
         prayerTimes.dhuhr.hour, prayerTimes.dhuhr.minute);
-    DateTime dhuhrEnd = DateTime(taskDate.year, taskDate.month, taskDate.day,
+    DateTime asrStart = DateTime(taskDate.year, taskDate.month, taskDate.day,
         prayerTimes.asr.hour, prayerTimes.asr.minute);
-    DateTime asrEnd = DateTime(taskDate.year, taskDate.month, taskDate.day,
-        prayerTimes.maghrib.hour, prayerTimes.maghrib.minute);
-    DateTime maghribEnd = DateTime(taskDate.year, taskDate.month, taskDate.day,
+    DateTime maghribStart = DateTime(taskDate.year, taskDate.month,
+        taskDate.day, prayerTimes.maghrib.hour, prayerTimes.maghrib.minute);
+    DateTime ishaStart = DateTime(taskDate.year, taskDate.month, taskDate.day,
         prayerTimes.isha.hour, prayerTimes.isha.minute);
 
-    // Define Isha end and Midnight start times, considering next day for Midnight
-    DateTime ishaEnd = DateTime(taskDate.year, taskDate.month, taskDate.day,
-        prayerTimes.isha.hour, prayerTimes.isha.minute);
-    DateTime MidnightStart = DateTime(
-        taskDate.year,
-        taskDate.month,
-        taskDate.day + 1,
-        sunnahTimes.lastThirdOfTheNight.hour,
-        sunnahTimes.lastThirdOfTheNight.minute);
-    DateTime MidnightEnd = DateTime(taskDate.year, taskDate.month,
-        taskDate.day + 1, prayerTimes.fajr.hour, prayerTimes.fajr.minute);
+    // Define end times for the prayers
+    DateTime fajrEnd = sunriseStart;
+    DateTime sunriseEnd = dhuhrStart;
+    DateTime dhuhrEnd = asrStart;
+    DateTime asrEnd = maghribStart;
+    DateTime maghribEnd = ishaStart;
+    DateTime ishaEnd = DateTime(
+        taskDate.year, taskDate.month, taskDate.day + 1, 00, 00); // Last Night
 
-    // Check Midnight time
-
-    // Check other prayers
-    if ((taskTime.isBefore(fajrEnd) && taskTime.isAfter(prayerTimes.fajr)) ||
-        taskTime == prayerTimes.fajr) {
+    // Check if the task time falls into any of the prayer times
+    if (taskTime.isAfter(fajrStart) && taskTime.isBefore(fajrEnd)) {
+      print("Current Associated Prayer: Fajr");
       return "Fajr";
-    } else if ((taskTime.isBefore(sunriseEnd) &&
-            taskTime.isAfter(prayerTimes.sunrise)) ||
-        taskTime == prayerTimes.sunrise) {
+    } else if (taskTime.isAfter(sunriseStart) &&
+        taskTime.isBefore(sunriseEnd)) {
+      print("Current Associated Prayer: Sunrise");
       return "Sunrise";
-    } else if ((taskTime.isBefore(dhuhrEnd) &&
-            taskTime.isAfter(prayerTimes.dhuhr)) ||
-        taskTime == prayerTimes.dhuhr) {
+    } else if (taskTime.isAfter(dhuhrStart) && taskTime.isBefore(dhuhrEnd)) {
+      print("Current Associated Prayer: Dhuhr");
       return "Dhuhr";
-    } else if ((taskTime.isBefore(asrEnd) &&
-            taskTime.isAfter(prayerTimes.asr)) ||
-        taskTime == prayerTimes.asr) {
+    } else if (taskTime.isAfter(asrStart) && taskTime.isBefore(asrEnd)) {
+      print("Current Associated Prayer: Asr");
       return "Asr";
-    } else if ((taskTime.isBefore(maghribEnd) &&
-            taskTime.isAfter(prayerTimes.maghrib)) ||
-        taskTime == prayerTimes.maghrib) {
+    } else if (taskTime.isAfter(maghribStart) &&
+        taskTime.isBefore(maghribEnd)) {
+      print("Current Associated Prayer: Maghrib");
       return "Maghrib";
-    } else if ((taskTime.isAfter(maghribEnd) && taskTime.isBefore(ishaEnd)) ||
-        taskTime == prayerTimes.isha) {
-      return "Isha";
-    } else if ((taskTime.isBefore(MidnightStart) &&
-        taskTime.isAfter(DateTime(
-            taskDate.year, taskDate.month, taskDate.day + 1, 00, 00)))) {
+    } else if (taskTime.isAfter(ishaStart) && taskTime.isBefore(ishaEnd)) {
+      print("Current Associated Prayer: Isha");
       return "Isha";
     }
-    return "Midnight";
+
+    print("Current Associated Prayer: Last Night");
+    return "Last Night";
   }
 }

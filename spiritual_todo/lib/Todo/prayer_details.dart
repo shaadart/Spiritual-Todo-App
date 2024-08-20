@@ -1,3 +1,4 @@
+import 'package:awesome_notifications/awesome_notifications.dart';
 import 'package:flutter/material.dart';
 import 'package:adhan/adhan.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -5,6 +6,7 @@ import 'package:intl/intl.dart';
 import 'package:spiritual_todo/Todo/todo_screen.dart';
 
 import '../Models/prayer_model.dart';
+import '../Service/db_helper.dart';
 import 'add_todo.dart';
 
 class PrayerDetailsScreen extends StatefulWidget {
@@ -25,8 +27,9 @@ class _PrayerDetailsScreenState extends State<PrayerDetailsScreen> {
   late PrayerTimes prayerTimes;
   late final SunnahTimes sunnahTimes;
   late DateTime currentTime;
-  List<TaskHelper> _tasks = []; // Local list to manage tasks
+  List<TaskHelper> _tasks = [];
   Set<int> _expandedTasks = {}; // Track expanded task IDs
+  List<TaskHelper> _deletedTasks = []; // Track deleted tasks
   void _toggleExpansion(int taskId) {
     setState(() {
       if (_expandedTasks.contains(taskId)) {
@@ -35,6 +38,29 @@ class _PrayerDetailsScreenState extends State<PrayerDetailsScreen> {
         _expandedTasks.add(taskId);
       }
     });
+  }
+
+  final DatabaseHelper _dbHelper = DatabaseHelper(
+    dbName: "userDatabase.db",
+    dbVersion: 3,
+    dbTable: "TaskTable",
+    columnId: 'id',
+    columnName: 'task',
+    columnTime: 'time',
+    columnAssociatedPrayer: 'associatedPrayer',
+    columnDaysOfWeek: 'daysOfWeek',
+  );
+  void _loadTasks() async {
+    final records = await _dbHelper.queryDatabase();
+    print("Fetched records: $records"); // Debug print to check fetched records
+    final tasks = records.map((map) => TaskHelper.fromMap(map)).toList();
+    tasks.sort((a, b) {
+      DateTime now = DateTime.now();
+      DateTime aUpcoming = a.getUpcomingDateTime(now);
+      DateTime bUpcoming = b.getUpcomingDateTime(now);
+      return aUpcoming.compareTo(bUpcoming);
+    });
+    // _tasksController.add(tasks);
   }
 
   @override
@@ -67,14 +93,10 @@ class _PrayerDetailsScreenState extends State<PrayerDetailsScreen> {
         : (_tasks.map((task) => task.id).reduce((a, b) => a > b ? a : b) + 1);
 
     setState(() {
-      _tasks.add(TaskHelper(
-        newId,
-        title,
-        time,
-        PrayerUtils.getAssociatedPrayer(time, prayerTimes, sunnahTimes),
-        []
-        // Initialize with empty days, can be updated later
-      ));
+      _tasks.add(TaskHelper(newId, title, time,
+          PrayerUtils.getAssociatedPrayer(time, prayerTimes, sunnahTimes), []
+          // Initialize with empty days, can be updated later
+          ));
     });
   }
 
@@ -104,11 +126,74 @@ class _PrayerDetailsScreenState extends State<PrayerDetailsScreen> {
 //   } else if (taskTime.isAfter(prayerTimes.isha)) {
 //     return "Isha";
 //   } else if (taskTime.isAfter(MidnightStart)) {
-//     return "Midnight";
+//     return "Last Night";
 //   }
 
 //   return "";
 // }
+  Future<void> _deleteTask(int id) async {
+    final deletedTaskMap =
+        await _dbHelper.getTask(id); // Get the task to delete
+    if (deletedTaskMap != null) {
+      final deletedTask = TaskHelper.fromMap(deletedTaskMap);
+      // Cancel the delayed deletion if undo is pressed
+      Future.delayed(Duration(milliseconds: 1), () async {
+        if (!_deletedTasks.contains(deletedTask)) {
+          await _dbHelper.deleteRecord(id);
+          AwesomeNotifications().cancel(id); // Cancel the notification
+          setState(() {
+            _deletedTasks.add(deletedTask); // Add to deleted tasks list
+            _expandedTasks
+                .remove(id); // Remove from expanded tasks when deleted
+          });
+        }
+      });
+    }
+  }
+
+  void _scheduleNotification(TaskHelper task) {
+    DateTime upcomingDateTime = task.getUpcomingDateTime(DateTime.now());
+
+    // Debug print to check scheduled time
+    print("Upcoming DateTime: $upcomingDateTime");
+    AwesomeNotifications().createNotification(
+      content: NotificationContent(
+        id: task.id,
+        channelKey: 'basic_channel',
+        body: 'Reminder',
+        title: task.title,
+        autoDismissible: false,
+        displayOnForeground: true,
+        displayOnBackground: true,
+        wakeUpScreen: true,
+        fullScreenIntent: true,
+      ),
+      schedule: NotificationCalendar.fromDate(
+        date: upcomingDateTime,
+        repeats: true,
+      ),
+    );
+    print("Scheduling notification for: $upcomingDateTime");
+  }
+
+  Future<void> _updateTask(TaskHelper task) async {
+    await _dbHelper.updateRecord(task.toMap());
+
+    // Cancel existing notification
+    AwesomeNotifications().cancel(task.id);
+
+    // Schedule new notification
+    _scheduleNotification(task);
+  }
+
+  void _undoDelete(TaskHelper deletedTask) {
+    setState(() {
+      _deletedTasks.remove(deletedTask); // Remove from deleted tasks list
+      _dbHelper
+          .insertRecord(deletedTask.toMap()); // Re-insert task into database
+      _loadTasks(); // Reload tasks to refresh UI
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -135,70 +220,50 @@ class _PrayerDetailsScreenState extends State<PrayerDetailsScreen> {
       appBar: AppBar(
         title: Text('${widget.prayer.label} Tasks',
             style: GoogleFonts.pixelifySans()),
-        actions: [Chip(label: Text('${_tasks.length}')), Text("      ")],
+        actions: [Chip(label: Text('${widget.tasks.length}')), Text("      ")],
         leading: IconButton(
           icon: Icon(Icons.close),
           onPressed: () => Navigator.of(context).pop(),
         ),
       ),
-      body: CustomScrollView(
-        controller: _scrollController,
-        slivers: [
-          SliverList(
-            delegate: SliverChildListDelegate(
-              [
-                Padding(
-                  padding: const EdgeInsets.all(21.0),
-                  child: Text(
-                      "starts at ${widget.prayer.time.toString().substring(11, 16)}"),
-                ),
-                if (_tasks.isEmpty)
-                  Padding(
-                    padding: const EdgeInsets.all(16.0),
-                    child: Text('No tasks for this prayer time.'),
-                  )
-                else
-                  ..._tasks
-                      .map(
-                        (task) => TaskItem(
-                          key: ValueKey(task.id),
-                          onCollapse: () => _toggleExpansion(task.id),
-                          task: task,
-                          onUpdate: (updatedTask) {
-                            setState(() {
-                              // Update the task in the list
-                              final index = _tasks
-                                  .indexWhere((t) => t.id == updatedTask.id);
-                              if (index != -1) {
-                                _tasks[index] = updatedTask;
-                              }
-                            });
-                          },
-                          onDelete: () {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text('${task.title} is deleted'),
-                                action: SnackBarAction(
-                                  label: 'Undo',
-                                  onPressed: () {
-                                    // Implement undo logic here
-                                  },
-                                ),
-                              ),
-                            );
-                            setState(() {
-                              // Remove the task from the list
-                              _tasks.removeWhere((t) => t.id == task.id);
-                            });
+      body: widget.tasks.isEmpty
+          ? Center(
+              child: Text(
+                'No tasks added in ${widget.prayer.label}',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+            )
+          : ListView.builder(
+              itemCount: widget.tasks.length, // Use filtered tasks
+              itemBuilder: (context, index) {
+                TaskHelper task = widget.tasks[index];
+                return TaskItem(
+                  key: ValueKey(task.id),
+                  task: task,
+                  onUpdate: (updatedTask) {
+                    _updateTask(updatedTask);
+                  },
+                  onDelete: () {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        duration: Duration(milliseconds: 1500),
+                        content: Text('${task.title} is deleted'),
+                        action: SnackBarAction(
+                          label: 'Undo',
+                          onPressed: () {
+                            _undoDelete(task);
                           },
                         ),
-                      )
-                      .toList()
-              ],
+                      ),
+                    );
+                    _deleteTask(task.id);
+                  },
+                  onCollapse: () {
+                    _toggleExpansion(task.id);
+                  },
+                );
+              },
             ),
-          ),
-        ],
-      ),
     );
   }
 }
